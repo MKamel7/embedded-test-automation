@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+uv.lock
+report*.html
+junit*.xml
+.pytest_cache/

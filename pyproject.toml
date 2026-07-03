@@ -1,0 +1,14 @@
+[project]
+name = "embedded-test-automation"
+version = "0.1.0"
+description = "HIL-style automated test framework for an embedded motor controller (simulated DUT, transport-abstracted driver, pytest + CI)"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-html>=4.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-ra"

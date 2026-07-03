@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run test suite with HTML report
+        run: uv run --group dev pytest --html=report-py${{ matrix.python-version }}.html --self-contained-html --junitxml=junit-py${{ matrix.python-version }}.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-py${{ matrix.python-version }}
+          path: |
+            report-py${{ matrix.python-version }}.html
+            junit-py${{ matrix.python-version }}.xml
