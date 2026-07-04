@@ -3,15 +3,27 @@
 import pytest
 
 from conftest import settle
+from dut_sim.motor_controller import MotorControllerSim
 from testbench.driver import ProtocolError
 
 
-def test_overheat_trips_fault_and_stops_motor(dut, sim):
+def test_overheat_trips_fault_and_stops_motor(dut, sim, measurements):
     dut.set_speed(3000)
     sim.inject_overheat()
     sim.step()
     assert dut.get_state() == "FAULT"
     assert dut.get_speed() == 0
+
+    # Measure trip latency on an independent probe: steps from the overheat
+    # injection to the FAULT state actually landing.
+    probe = MotorControllerSim()
+    probe.inject_overheat()
+    trip_latency = 0
+    for trip_latency in range(1, 11):
+        probe.step()
+        if probe.state == "FAULT":
+            break
+    measurements.record("test_overheat_trips_fault_and_stops_motor", "overheat_trip_latency", trip_latency, "steps")
 
 
 def test_fault_rejects_speed_commands(dut, sim):

@@ -1,0 +1,6 @@
+run_timestamp,test,metric,value,unit
+20260704-010357,test_speed_converges_to_setpoint,settling_steps,15,steps
+20260704-010357,test_running_motor_heats_up_above_ambient,peak_temperature,45.12454813571822,degC
+20260704-010357,test_overheat_trips_fault_and_stops_motor,overheat_trip_latency,1,steps
+20260704-010357,test_missing_kicks_trips_fault_at_exactly_budget,watchdog_trip_latency,10,steps
+20260704-010357,test_missing_kicks_trips_fault_at_exactly_budget,watchdog_trip_budget,10,steps

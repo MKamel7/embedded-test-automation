@@ -5,3 +5,6 @@ uv.lock
 report*.html
 junit*.xml
 .pytest_cache/
+measurements/*
+!measurements/sample-run.csv
+!measurements/characterization.csv

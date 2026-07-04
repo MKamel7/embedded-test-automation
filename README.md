@@ -7,8 +7,8 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ```
 ┌────────────────┐     ASCII protocol      ┌──────────────────────┐
 │  pytest suite  │──▶ driver ──▶ Transport │  Device under test   │
-│  20 tests      │            (swappable)  │  (simulated today,   │
-│  3 categories  │◀── responses ◀──────────│   real UART later)   │
+│  33 tests      │            (swappable)  │  (simulated today,   │
+│  4 categories  │◀── responses ◀──────────│   real UART later)   │
 └────────────────┘                         └──────────────────────┘
 ```
 
@@ -25,6 +25,26 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 | `tests/test_protocol.py` | Command grammar, range limits (0–6000 rpm boundary-exact), error codes, malformed input |
 | `tests/test_control_behavior.py` | Setpoint convergence (<1.7% after settling), monotonic ramp, thermal rise/cooldown |
 | `tests/test_fault_injection.py` | Overheat trip, stall-to-overheat cascade, fault latching, command rejection in FAULT, telemetry availability during faults, RESET recovery |
+| `tests/test_watchdog.py` | Software watchdog: enable/kick/disable, exact-budget trip, latched fault, RESET recovery, range validation |
+| `tests/test_protocol_fuzz.py` | Property-based fuzzing (hypothesis): never-crash contract, state-machine invariants, FAULT-latch invariant, SET_SPEED and watchdog contracts |
+
+## Characterization
+
+Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.py` sweeps parameters over fresh device instances and `scripts/plot_characterization.py` renders the curves:
+
+![Controller characterization](docs/characterization.png)
+
+| Sweep | Result |
+|---|---|
+| Peak winding temperature vs. target speed | Smooth rise 27 → 49 °C across 500–6000 rpm, well under the 90 °C protection limit |
+| Settling time vs. target speed | Monotonic 9 → 17 steps — higher setpoints take longer to reach the ±50 rpm band |
+| Watchdog trip latency vs. budget | Exact diagonal (latency = budget) across 2–200 steps — verifies watchdog timing precision |
+
+Property-based fuzzing (`test_protocol_fuzz.py`) runs 200 examples per property against fresh device instances and found **no invariant violations**: the protocol never raises on arbitrary input, and `FAULT` provably never clears except immediately after `RESET`.
+
+## Measurement logging
+
+Behavior and fault tests record real metrics (settling steps, peak temperature, trip latencies) to timestamped CSVs via a session fixture; `scripts/plot_trends.py` charts a metric across runs for regression tracking. See `measurements/sample-run.csv`.
 
 ## Run it
 
@@ -37,10 +57,12 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 
 ## Roadmap
 
-- [ ] pyserial `Transport` + hardware profile for a real motor driver board
-- [ ] Property-based protocol fuzzing (hypothesis)
-- [ ] Measurement logging + trend plots across test runs
-- [ ] Watchdog / communication-timeout test scenarios
+- [x] pyserial `Transport` (`SerialTransport`) + `loop://` framing tests — HIL upgrade path
+- [x] Property-based protocol fuzzing (hypothesis)
+- [x] Measurement logging + trend/characterization plots
+- [x] Watchdog / communication-timeout test scenarios
+- [ ] Hardware profile for a real motor driver board
+- [ ] Hypothesis `target()`-guided fault-state coverage
 
 ## License
 

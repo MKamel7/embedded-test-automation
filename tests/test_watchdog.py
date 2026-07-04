@@ -14,7 +14,7 @@ def test_kicked_watchdog_keeps_running(dut, sim):
     assert dut.get_state() == "RUNNING"
 
 
-def test_missing_kicks_trips_fault_at_exactly_budget(dut, sim):
+def test_missing_kicks_trips_fault_at_exactly_budget(dut, sim, measurements):
     # SimTransport advances the sim by one step per request (see conftest's
     # dut fixture), so the WDG_EN call itself consumes the first of the 10
     # budgeted steps; read sim.state directly to avoid perturbing the count.
@@ -23,6 +23,12 @@ def test_missing_kicks_trips_fault_at_exactly_budget(dut, sim):
     assert sim.state != "FAULT"
     sim.step(1)  # the 10th step exhausts the budget
     assert sim.state == "FAULT"
+
+    # WDG_EN itself consumes the first budgeted step (see comment above), so
+    # the total steps from enabling the watchdog to the trip equals the
+    # configured budget - recorded here for trend tracking, not asserted.
+    measurements.record("test_missing_kicks_trips_fault_at_exactly_budget", "watchdog_trip_latency", 10, "steps")
+    measurements.record("test_missing_kicks_trips_fault_at_exactly_budget", "watchdog_trip_budget", 10, "steps")
 
 
 def test_kick_after_trip_rejected(dut, sim):
