@@ -26,7 +26,9 @@ from dataclasses import dataclass, field
 
 # --- model parameters -------------------------------------------------------
 # REFERENCE DEVICE: Siemens SIMOTICS S-1FK2 permanent-magnet synchronous
-# servomotor, article 1FK2105-6AF10-0SA0, on a SINAMICS S210 drive. Values
+# servomotor, article 1FK2105-6AF10-0SA0, on a SINAMICS S210 drive. The data
+# sheet is archived in the repo at docs/datasheets/ and cited in full in
+# docs/REFERENCES.md, so the numbers stay checkable without a live URL. Values
 # marked [DS] are taken from the published Siemens data sheet for that article
 # number; values marked [DERIVED] are computed from those; values marked
 # [ILLUSTRATIVE] are not published by Siemens and are chosen, not measured.

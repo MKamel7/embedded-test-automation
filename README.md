@@ -34,7 +34,8 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 The DUT is a simulation, but its envelope and protection thresholds are taken
 from a real device rather than invented: a **Siemens SIMOTICS S-1FK2**
 permanent-magnet synchronous servomotor, article `1FK2105-6AF10-0SA0`, on a
-SINAMICS S210 drive.
+SINAMICS S210 drive. The data sheet is archived in this repo and cited in full
+in [`docs/REFERENCES.md`](docs/REFERENCES.md).
 
 | From the data sheet | Value | Used for |
 |---|---|---|
