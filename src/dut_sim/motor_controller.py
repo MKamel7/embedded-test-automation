@@ -24,14 +24,59 @@ communication-timeout fault on a real controller.
 
 from dataclasses import dataclass, field
 
-MAX_RPM = 6000
-OVERHEAT_LIMIT_C = 90.0
-AMBIENT_C = 25.0
+# --- model parameters -------------------------------------------------------
+# REFERENCE DEVICE: Siemens SIMOTICS S-1FK2 permanent-magnet synchronous
+# servomotor, article 1FK2105-6AF10-0SA0, on a SINAMICS S210 drive. Values
+# marked [DS] are taken from the published Siemens data sheet for that article
+# number; values marked [DERIVED] are computed from those; values marked
+# [ILLUSTRATIVE] are not published by Siemens and are chosen, not measured.
+#
+# The point of naming a real device is that the operating envelope and the
+# protection thresholds stop being invented. It does NOT make this a validated
+# model of that motor, and no such claim is made.
+STEP_MS = 1.0              # [DERIVED] one simulation step, see SPEED_TRACKING
 
-# First-order dynamics constants per simulation step.
-SPEED_TRACKING = 0.25      # fraction of the speed error closed each step
+MAX_RPM = 6000             # [DS] maximum speed 6,000 rpm
+RATED_RPM = 3000           # [DS] rated speed 3,000 rpm
+RATED_TORQUE_NM = 6.60     # [DS] rated torque
+MAX_TORQUE_NM = 24.00      # [DS] maximum torque
+RATED_CURRENT_A = 5.6      # [DS] rated current
+MAX_CURRENT_A = 24.0       # [DS] maximum current
+ROTOR_INERTIA_KGM2 = 3.5e-4  # [DS] rotor moment of inertia 3.5 kgcm^2
+
+# [DS] Thermal class 155 (F) for this frame size, winding overtemperature
+# dT = 100 K per EN/IEC 60034-1, at a rated ambient of 40 C. The protection
+# threshold is therefore the permitted winding temperature, not a round number.
+AMBIENT_C = 40.0
+OVERHEAT_LIMIT_C = AMBIENT_C + 100.0        # 140 C
+
+# [DERIVED] Speed dynamics fitted to the data sheet. At rated torque the
+# torque-limited acceleration is M/J = 6.60 / 3.5e-4 = 18857 rad/s^2, so the
+# rotor reaches rated speed (314.16 rad/s) in 16.7 ms. SPEED_TRACKING is chosen
+# so that this first-order model settles to within +-50 rpm of a 3000 rpm
+# setpoint in the same 16.7 ms with STEP_MS = 1.
+#
+# Deliberate simplification: a real servo under torque limit accelerates
+# linearly and then the speed loop closes, so the true profile is a ramp, not an
+# exponential. Only the time to reach the setpoint is matched, not the shape.
+SPEED_TRACKING = 0.2179
+
+# [ILLUSTRATIVE] Siemens does not publish a thermal time constant for this
+# motor, so the thermal dynamics are NOT fitted. Worse, they cannot be: a 2 kW
+# servo's winding thermal time constant is minutes, while its mechanical
+# response is milliseconds, roughly five orders of magnitude apart. Modelling
+# both faithfully on one step size would need millions of steps to reach a
+# thermal trip, which no test suite can run. The thermal time scale is therefore
+# deliberately COMPRESSED so a thermal fault is reachable in a short test. The
+# ratio of thermal to mechanical response here is not physical, and any thermal
+# latency from this model is in steps only, never in seconds.
 HEATING_PER_KRPM = 0.35    # deg C added per step per 1000 rpm of speed
 COOLING_RATE = 0.08        # fraction of excess-over-ambient shed each step
+
+# [DERIVED] A blocked rotor draws locked-rotor current, and resistive heating
+# goes as I^2. The data sheet's maximum to rated current ratio is 24.0 / 5.6,
+# so stall heating is scaled by its square rather than by a guessed factor.
+STALL_HEATING_FACTOR = (MAX_CURRENT_A / RATED_CURRENT_A) ** 2   # ~18.4
 
 # Watchdog budget bounds, in simulation steps.
 WDG_MIN_STEPS = 1
@@ -124,7 +169,8 @@ class MotorControllerSim:
                 # rotor blocked: no motion, current keeps heating the windings
                 self.speed_rpm = 0.0
                 if self.target_rpm > 0:
-                    self.temperature_c += HEATING_PER_KRPM * self.target_rpm / 1000 * 3
+                    self.temperature_c += (HEATING_PER_KRPM * self.target_rpm / 1000
+                                           * STALL_HEATING_FACTOR)
             else:
                 self.speed_rpm += (self.target_rpm - self.speed_rpm) * SPEED_TRACKING
                 self.temperature_c += HEATING_PER_KRPM * self.speed_rpm / 1000

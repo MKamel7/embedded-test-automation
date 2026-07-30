@@ -29,6 +29,34 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 | `tests/test_protocol_fuzz.py` | Property-based fuzzing (hypothesis): never-crash contract, state-machine invariants, FAULT-latch invariant, SET_SPEED and watchdog contracts |
 | `tests/test_fuzz_efficacy.py` | Fault seeding: three deliberately broken controllers that the property suite must reject |
 
+## The device under test
+
+The DUT is a simulation, but its envelope and protection thresholds are taken
+from a real device rather than invented: a **Siemens SIMOTICS S-1FK2**
+permanent-magnet synchronous servomotor, article `1FK2105-6AF10-0SA0`, on a
+SINAMICS S210 drive.
+
+| From the data sheet | Value | Used for |
+|---|---|---|
+| Maximum speed | 6,000 rpm | `SET_SPEED` upper range limit |
+| Rated speed / torque | 3,000 rpm / 6.60 Nm | speed dynamics fit |
+| Rotor inertia | 3.5 kgcm² | speed dynamics fit |
+| Rated / maximum current | 5.6 A / 24.0 A | stall heating scale |
+| Thermal class | 155 (F), dT = 100 K at 40 °C ambient | 140 °C overheat trip |
+
+The speed dynamics are **fitted**: at rated torque the torque-limited
+acceleration is 6.60 / 3.5e-4 = 18,857 rad/s², so the rotor reaches rated speed
+in 16.7 ms, and the first-order constant is chosen to settle in the same time
+with 1 step = 1 ms. Only the time is matched, not the shape, since a real servo
+under torque limit ramps linearly rather than exponentially.
+
+The thermal dynamics are **not** fitted and cannot be. Siemens does not publish
+a thermal time constant, and more fundamentally a 2 kW servo's winding thermal
+constant is minutes while its mechanical response is milliseconds. Modelling
+both on one step size would need millions of steps to reach a thermal trip. The
+thermal time scale is deliberately compressed so a thermal fault is reachable in
+a short test, so thermal latencies are in steps only and never in seconds.
+
 ## Characterization
 
 Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.py` sweeps parameters over fresh device instances and `scripts/plot_characterization.py` renders the curves:
@@ -37,9 +65,9 @@ Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.p
 
 | Sweep | Result |
 |---|---|
-| Peak winding temperature vs. target speed | Smooth rise 27 → 49 °C across 500–6000 rpm, well under the 90 °C protection limit |
-| Settling time vs. target speed | Monotonic 9 → 17 steps — higher setpoints take longer to reach the ±50 rpm band |
-| Watchdog trip latency vs. budget | Exact diagonal (latency = budget) across 2–200 steps — verifies watchdog timing precision |
+| Peak winding temperature vs. target speed | Smooth rise 42.0 to 64.1 °C across 500 to 6000 rpm, well under the 140 °C protection limit |
+| Settling time vs. target speed | Monotonic 10 to 20 steps (1 step = 1 ms), higher setpoints take longer to reach the ±50 rpm band |
+| Watchdog trip latency vs. budget | Exact diagonal (latency = budget) across 2 to 200 steps, verifying watchdog timing precision |
 
 Property-based fuzzing (`test_protocol_fuzz.py`) runs 200 examples per property against fresh device instances and found **no invariant violations**: the protocol never raises on arbitrary input, and `FAULT` provably never clears except immediately after `RESET`.
 

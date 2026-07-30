@@ -105,9 +105,27 @@ Ordered by consequence on real hardware:
 
 Stated because they bound what the results mean:
 
-- **The DUT is a simulation.** First order dynamics with fixed coefficients. It
-  models the behaviour the protocol exposes, not the physics of a real motor.
-  Nothing here validates a real driver stage.
+- **The DUT is a simulation, partially grounded in a real device.** The
+  operating envelope and protection thresholds come from the Siemens SIMOTICS
+  S-1FK2 data sheet (article `1FK2105-6AF10-0SA0`): 6,000 rpm maximum speed,
+  and a 140 °C overheat trip from thermal class 155 (F) with dT = 100 K at 40 °C
+  ambient. The speed dynamics are fitted to the data sheet's rated torque and
+  rotor inertia. Nothing here validates a real driver stage, and this is not a
+  validated model of that motor.
+
+  Worth separating, because it decides which results would survive contact with
+  hardware. The command grammar, the range checks, the FAULT latch and the
+  watchdog are state machine and counter logic, so their verification is
+  independent of the physics and transfers unchanged. The overheat trip, the
+  stall heating path, and any latency expressed in real time units depend on the
+  model and would not.
+
+- **The thermal time scale is deliberately compressed.** A 2 kW servo's winding
+  thermal time constant is minutes; its mechanical response is milliseconds.
+  Modelling both faithfully on one step size would need millions of steps to
+  reach a thermal trip. The thermal rates are therefore chosen, not fitted, and
+  the ratio of thermal to mechanical response in this model is not physical.
+  Thermal latencies are reported in steps and must never be quoted in seconds.
 - **Time is in steps, not seconds.** This makes the suite fast and perfectly
   reproducible, and it means every latency figure is in simulation steps. They
   become meaningful in real units only against real hardware.
