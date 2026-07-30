@@ -8,3 +8,7 @@ junit*.xml
 measurements/*
 !measurements/sample-run.csv
 !measurements/characterization.csv
+
+# build artifacts from `uv build` (the wheel is published via the release, not committed)
+dist/
+*.egg-info/
