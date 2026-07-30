@@ -27,8 +27,12 @@ def test_missing_kicks_trips_fault_at_exactly_budget(dut, sim, measurements):
     # WDG_EN itself consumes the first budgeted step (see comment above), so
     # the total steps from enabling the watchdog to the trip equals the
     # configured budget - recorded here for trend tracking, not asserted.
-    measurements.record("test_missing_kicks_trips_fault_at_exactly_budget", "watchdog_trip_latency", 10, "steps")
-    measurements.record("test_missing_kicks_trips_fault_at_exactly_budget", "watchdog_trip_budget", 10, "steps")
+    measurements.record(
+        "test_missing_kicks_trips_fault_at_exactly_budget",
+        "watchdog_trip_latency", 10, "steps")
+    measurements.record(
+        "test_missing_kicks_trips_fault_at_exactly_budget",
+        "watchdog_trip_budget", 10, "steps")
 
 
 def test_kick_after_trip_rejected(dut, sim):

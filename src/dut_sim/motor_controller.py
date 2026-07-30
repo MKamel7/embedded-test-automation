@@ -72,7 +72,7 @@ class MotorControllerSim:
                 self.state = "IDLE"
             return "OK"
         if cmd == "RESET":
-            self.__init__()  # back to factory state
+            self.reset()
             return "OK"
         if cmd == "WDG_EN" and len(args) == 1:
             return self._cmd_wdg_en(args[0])
@@ -142,6 +142,24 @@ class MotorControllerSim:
                 self.trip_fault()
 
             self.temperature_c -= (self.temperature_c - AMBIENT_C) * COOLING_RATE
+
+    def reset(self) -> None:
+        """Return every field to its power-on value.
+
+        Written out rather than calling self.__init__() again: re-running the
+        constructor on an instance only happens to work while the class has no
+        subclass that adds state, and it silently does the wrong thing the
+        moment one does. Setting the fields explicitly is also what a real
+        controller's reset vector does.
+        """
+        self.speed_rpm = 0.0
+        self.target_rpm = 0.0
+        self.temperature_c = AMBIENT_C
+        self.state = "IDLE"
+        self._stalled = False
+        self._wdg_enabled = False
+        self._wdg_budget = 0
+        self._wdg_remaining = 0
 
     # ---- fault injection (test backdoor, not part of the protocol) ----
     def trip_fault(self) -> None:

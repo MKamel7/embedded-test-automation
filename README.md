@@ -7,8 +7,8 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ```
 ┌────────────────┐     ASCII protocol      ┌──────────────────────┐
 │  pytest suite  │──▶ driver ──▶ Transport │  Device under test   │
-│  33 tests      │            (swappable)  │  (simulated today,   │
-│  4 categories  │◀── responses ◀──────────│   real UART later)   │
+│  44 tests      │            (swappable)  │  (simulated today,   │
+│  100% coverage │◀── responses ◀──────────│   real UART later)   │
 └────────────────┘                         └──────────────────────┘
 ```
 
@@ -27,6 +27,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 | `tests/test_fault_injection.py` | Overheat trip, stall-to-overheat cascade, fault latching, command rejection in FAULT, telemetry availability during faults, RESET recovery |
 | `tests/test_watchdog.py` | Software watchdog: enable/kick/disable, exact-budget trip, latched fault, RESET recovery, range validation |
 | `tests/test_protocol_fuzz.py` | Property-based fuzzing (hypothesis): never-crash contract, state-machine invariants, FAULT-latch invariant, SET_SPEED and watchdog contracts |
+| `tests/test_fuzz_efficacy.py` | Fault seeding: three deliberately broken controllers that the property suite must reject |
 
 ## Characterization
 
@@ -42,6 +43,46 @@ Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.p
 
 Property-based fuzzing (`test_protocol_fuzz.py`) runs 200 examples per property against fresh device instances and found **no invariant violations**: the protocol never raises on arbitrary input, and `FAULT` provably never clears except immediately after `RESET`.
 
+## Proving the tests can actually fail
+
+"No defects found" only means something if the suite could have found one. So
+three known bugs are seeded into copies of the controller, and
+`test_fuzz_efficacy.py` asserts the same properties reject each of them while
+still passing on the clean implementation:
+
+| Seeded defect | Minimal input that exposes it |
+|---|---|
+| A latched `FAULT` cleared by an unknown command instead of only by `RESET` | any unrecognised line |
+| `SET_SPEED` boundary written `<= MAX + 1` | `SET_SPEED 6001` |
+| Watchdog countdown compared `< 0` instead of `<= 0`, firing one step late | a 1 step budget |
+
+This found a real weakness in the suite. The seeded range defect initially
+**survived**: `SET_SPEED` was fuzzed with unbounded floats, and only values in
+`(6000, 6001]` expose a one unit boundary error, so the property essentially
+never generated one. Both the property and the efficacy search now sample the
+neighbourhood of each documented limit, which is boundary value analysis
+expressed as a strategy.
+
+## Test design
+
+Techniques are chosen deliberately: equivalence partitioning and boundary value
+analysis on the command ranges, state transition testing across
+IDLE/RUNNING/FAULT with the FAULT latch rule, fault injection through a test
+backdoor, property based testing with a stateful model, and fault seeding to
+verify the suite itself. Scope, entry and exit criteria, risk based
+prioritisation and the honest limits are in
+[`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md).
+
+## Quality gates
+
+CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
+
+- 44 tests pass
+- **100% statement and branch coverage** of the DUT and testbench
+  (`--cov-fail-under=100`)
+- `ruff check` clean
+- `mypy --strict` clean
+
 ## Measurement logging
 
 Behavior and fault tests record real metrics (settling steps, peak temperature, trip latencies) to timestamped CSVs via a session fixture; `scripts/plot_trends.py` charts a metric across runs for regression tracking. See `measurements/sample-run.csv`.
@@ -49,7 +90,9 @@ Behavior and fault tests record real metrics (settling steps, peak temperature, 
 ## Run it
 
 ```bash
-uv run --group dev pytest                  # full suite
+uv run --group dev pytest                  # full suite, with coverage
+uv run --group dev ruff check .            # lint
+uv run --group dev mypy                    # strict type check
 uv run --group dev pytest --html=report.html --self-contained-html   # + report
 ```
 
@@ -61,6 +104,8 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 - [x] Property-based protocol fuzzing (hypothesis)
 - [x] Measurement logging + trend/characterization plots
 - [x] Watchdog / communication-timeout test scenarios
+- [x] Fault seeding to verify the property suite detects real defects
+- [x] Coverage, lint and type-check gates in CI
 - [ ] Hardware profile for a real motor driver board
 - [ ] Hypothesis `target()`-guided fault-state coverage
 

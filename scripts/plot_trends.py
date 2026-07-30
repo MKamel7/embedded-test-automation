@@ -65,7 +65,7 @@ def plot(series: dict, output_path: Path) -> None:
     if len(metrics) == 1:
         axes = [axes]
 
-    for ax, metric in zip(axes, metrics):
+    for ax, metric in zip(axes, metrics, strict=False):
         ax.set_facecolor(COLOR_SURFACE)
         unit = ""
         for test, points in series[metric].items():

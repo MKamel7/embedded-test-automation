@@ -26,11 +26,11 @@ class SerialTransport:
 
     def _read_line(self, context: str = "") -> str:
         """Read one '\\n'-terminated line, raising TransportTimeout if none arrives."""
-        raw = self.serial.readline()
+        raw: bytes = self.serial.readline()
         if not raw.endswith(b"\n"):
             detail = f" for {context!r}" if context else ""
             raise TransportTimeout(f"no response within {self.timeout}s{detail}")
-        return raw.decode("ascii").strip()
+        return str(raw.decode("ascii").strip())
 
     def close(self) -> None:
         self.serial.close()

@@ -3,7 +3,7 @@
 import pytest
 
 from conftest import settle
-from dut_sim.motor_controller import MotorControllerSim
+from dut_sim.motor_controller import AMBIENT_C, MotorControllerSim
 from testbench.driver import ProtocolError
 
 
@@ -19,11 +19,13 @@ def test_overheat_trips_fault_and_stops_motor(dut, sim, measurements):
     probe = MotorControllerSim()
     probe.inject_overheat()
     trip_latency = 0
-    for trip_latency in range(1, 11):
+    while trip_latency < 10:
+        trip_latency += 1
         probe.step()
         if probe.state == "FAULT":
             break
-    measurements.record("test_overheat_trips_fault_and_stops_motor", "overheat_trip_latency", trip_latency, "steps")
+    measurements.record("test_overheat_trips_fault_and_stops_motor",
+                        "overheat_trip_latency", trip_latency, "steps")
 
 
 def test_fault_rejects_speed_commands(dut, sim):
@@ -53,6 +55,21 @@ def test_stalled_rotor_overheats_into_fault(dut, sim):
     dut.set_speed(5000)
     settle(sim, steps=300)
     assert dut.get_state() == "FAULT"
+
+
+def test_stalled_rotor_at_zero_command_does_not_heat(dut, sim):
+    """A blocked rotor with no speed commanded draws no current, so no heating.
+
+    The complement of the stall-to-overheat case: stall heating is driven by
+    the commanded current, not by the stall itself. Without this the "is
+    anything commanded" branch of the stall path is never taken false, and a
+    controller that heated a stopped motor would pass the suite.
+    """
+    sim.inject_stall()
+    dut.set_speed(0)
+    settle(sim, steps=300)
+    assert dut.get_state() != "FAULT"
+    assert dut.get_temperature() <= AMBIENT_C + 0.5
 
 
 def test_telemetry_still_readable_in_fault(dut, sim):

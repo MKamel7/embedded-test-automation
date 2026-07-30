@@ -15,11 +15,13 @@ def test_speed_converges_to_setpoint(dut, sim, measurements):
     probe.target_rpm = 3000
     probe.state = "RUNNING"
     settling_steps = 0
-    for settling_steps in range(1, 201):
+    while settling_steps < 200:
+        settling_steps += 1
         probe.step()
         if abs(probe.speed_rpm - 3000) < 50:
             break
-    measurements.record("test_speed_converges_to_setpoint", "settling_steps", settling_steps, "steps")
+    measurements.record("test_speed_converges_to_setpoint",
+                        "settling_steps", settling_steps, "steps")
 
 
 def test_speed_approach_is_monotonic(dut, sim):
@@ -51,7 +53,8 @@ def test_running_motor_heats_up_above_ambient(dut, sim, measurements):
     for _ in range(100):
         sim.step()
         peak_temp = max(peak_temp, sim.temperature_c)
-    measurements.record("test_running_motor_heats_up_above_ambient", "peak_temperature", peak_temp, "degC")
+    measurements.record("test_running_motor_heats_up_above_ambient",
+                        "peak_temperature", peak_temp, "degC")
 
 
 def test_stopped_motor_cools_toward_ambient(dut, sim):

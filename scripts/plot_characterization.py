@@ -68,7 +68,7 @@ def plot(panels: dict, output_path: Path) -> None:
     if len(keys) == 1:
         axes = [axes]
 
-    for ax, key in zip(axes, keys):
+    for ax, key in zip(axes, keys, strict=False):
         sweep_param, metric = key
         points = panels[key]
         xs = [p[0] for p in points]
@@ -89,7 +89,8 @@ def plot(panels: dict, output_path: Path) -> None:
         ax.set_title(
             METRIC_TITLES.get(metric, metric), color=COLOR_PRIMARY_INK, fontsize=11, loc="left"
         )
-        ax.set_xlabel(SWEEP_LABELS.get(sweep_param, sweep_param), color=COLOR_SECONDARY_INK, fontsize=9)
+        ax.set_xlabel(SWEEP_LABELS.get(sweep_param, sweep_param),
+                      color=COLOR_SECONDARY_INK, fontsize=9)
         ax.set_ylabel(unit, color=COLOR_SECONDARY_INK, fontsize=9)
         ax.tick_params(colors=COLOR_MUTED, labelsize=8)
         for side in ("top", "right"):

@@ -93,7 +93,8 @@ def main() -> None:
 
     for budget_steps in WATCHDOG_BUDGETS:
         latency = measure_watchdog_latency(budget_steps)
-        rows.append(("watchdog_budget_steps", budget_steps, "watchdog_trip_latency", latency, "steps"))
+        rows.append(("watchdog_budget_steps", budget_steps,
+                     "watchdog_trip_latency", latency, "steps"))
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("w", newline="") as f:

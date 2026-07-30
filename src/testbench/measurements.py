@@ -22,7 +22,9 @@ class MeasurementLog:
     run_timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     )
-    _rows: list = field(default_factory=list, repr=False)
+    _rows: list[tuple[str, str, str, float, str]] = field(
+        default_factory=list, repr=False
+    )
 
     def record(self, test_name: str, metric: str, value: float, unit: str) -> None:
         """Append one measurement row, stamped with this run's timestamp."""

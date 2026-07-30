@@ -9,11 +9,19 @@ held on the current sim implementation across max_examples=200 runs,
 including edge cases like NaN/inf speeds, unicode/control-character and
 500-char text lines, and watchdog gaps landing exactly on the budget
 boundary. This file therefore documents confirmation, not a fix.
+
+That "no defect found" result only means something because the same properties
+are shown to FAIL against deliberately defective controllers: see
+tests/test_fuzz_efficacy.py, which seeds three known bugs and asserts each is
+caught. Doing that also exposed a weakness here, now fixed: the SET_SPEED draw
+was unbounded floats, which essentially never lands in the narrow window a
+one-unit boundary defect opens, so the property could not have caught one.
 """
 
 import math
 
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
 from dut_sim.motor_controller import MAX_RPM, MotorControllerSim
@@ -61,7 +69,21 @@ def test_handle_command_never_crashes(line):
 
 
 # ---- SET_SPEED contract --------------------------------------------------
-@given(v=st.floats(allow_nan=True, allow_infinity=True))
+# Boundary value analysis on top of the unbounded float draw. Fault seeding
+# (see test_fuzz_efficacy.py) showed the unbounded draw alone is close to
+# useless against a one-unit boundary defect: only values in (MAX_RPM,
+# MAX_RPM + 1] expose it, which a float strategy over the whole real line
+# essentially never generates. Sampling the neighbourhood of each documented
+# limit fixes that, and is what a tester would write by hand anyway.
+speed_strategy = st.one_of(
+    st.floats(allow_nan=True, allow_infinity=True),
+    st.floats(min_value=MAX_RPM - 2, max_value=MAX_RPM + 2),   # upper limit
+    st.floats(min_value=-2, max_value=2),                      # lower limit
+    st.sampled_from([0.0, float(MAX_RPM), MAX_RPM + 1.0, -1.0]),
+)
+
+
+@given(v=speed_strategy)
 @settings(max_examples=200, deadline=None)
 def test_set_speed_contract(v):
     sim = MotorControllerSim()
@@ -137,5 +159,7 @@ class ProtocolStateMachine(RuleBasedStateMachine):
         assert 0 <= self.sim.speed_rpm <= MAX_RPM * 1.01
 
 
-ProtocolStateMachine.TestCase.settings = settings(max_examples=200, deadline=None, stateful_step_count=30)
+ProtocolStateMachine.TestCase.settings = settings(
+    max_examples=200, deadline=None, stateful_step_count=30
+)
 TestProtocolStateMachine = ProtocolStateMachine.TestCase
