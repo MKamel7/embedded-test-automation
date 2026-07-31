@@ -7,7 +7,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ```
 ┌────────────────┐     ASCII protocol      ┌──────────────────────┐
 │  pytest suite  │──▶ driver ──▶ Transport │  Device under test   │
-│  44 tests      │            (swappable)  │  (simulated today,   │
+│  80 tests      │            (swappable)  │  (simulated today,   │
 │  100% coverage │◀── responses ◀──────────│   real UART later)   │
 └────────────────┘                         └──────────────────────┘
 ```
@@ -106,7 +106,7 @@ prioritisation and the honest limits are in
 
 CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
 
-- 44 tests pass
+- 80 tests pass
 - **100% statement and branch coverage** of the DUT and testbench
   (`--cov-fail-under=100`)
 - `ruff check` clean
