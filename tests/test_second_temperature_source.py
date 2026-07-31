@@ -78,13 +78,62 @@ def test_the_trip_cause_is_reported() -> None:
     assert sim.handle_command("GET_FAULT") == "OK OVERLOAD_I2T"
 
 
-def test_reset_clears_both_the_second_node_and_the_cause() -> None:
+def test_reset_clears_the_controller_and_not_the_machine() -> None:
+    """A controller cannot cool a motor by clearing a register.
+
+    This test previously asserted the opposite: that RESET returned the frame
+    node to ambient. It was passing against a reset() that wiped winding
+    temperature, frame temperature, peak history, cooling degradation and load,
+    while carrying a docstring saying it did not, and a release note repeating
+    the claim. An independent reviewer found it by reading the two against each
+    other.
+
+    Nothing caught it internally because the other reset tests assert that the
+    RESET COMMAND is refused while hot, which is a different property, and
+    because reset() is reachable directly through the driver without passing
+    that gate at all.
+    """
+    sim = MotorControllerSim()
+    sim.cooling_scale = 0.6
+    sim.load_torque_nm = RATED_TORQUE_NM * 1.5
+    _run_until_fault(sim)
+    hot_winding = sim.temperature_c
+    hot_frame = sim.housing_temperature_c
+    assert hot_frame > AMBIENT_C
+
+    sim.reset()
+
+    # controller state is cleared
+    assert sim.state == "IDLE"
+    assert sim.fault_reason is None
+    assert sim.target_rpm == 0.0
+    assert not sim.drive_enabled
+    assert sim.overload_accumulator == 0.0
+
+    # the machine is not
+    assert sim.temperature_c == hot_winding, "reset cooled the winding"
+    assert sim.housing_temperature_c == hot_frame, "reset cooled the frame"
+    assert sim.cooling_scale == 0.6, "reset unblocked the cooling"
+    assert sim.load_torque_nm == RATED_TORQUE_NM * 1.5, "reset removed the load"
+    assert sim._stalled, "reset unjammed the shaft"
+
+
+def test_a_reset_loop_cannot_defeat_a_thermal_fault() -> None:
+    """The consequence, which is what makes the above worth a test.
+
+    With thermal state cleared on every reset, a supervisor could clear a
+    latched overtemperature indefinitely at a few steps per cycle and the
+    simulation would agree the motor was cold each time.
+    """
     sim = MotorControllerSim()
     _run_until_fault(sim)
-    assert sim.housing_temperature_c > AMBIENT_C
-    sim.handle_command("RESET")
-    assert sim.housing_temperature_c == AMBIENT_C
-    assert sim.fault_reason is None
+    for _ in range(20):
+        sim.handle_command("RESET")
+        sim.step(1)
+    assert sim.temperature_c > AMBIENT_C, (
+        "twenty reset cycles returned the winding to ambient, so the latch is "
+        "defeatable by looping on RESET"
+    )
 
 
 # --- the frame is a real second node, not a copy ------------------------------
@@ -470,3 +519,89 @@ def test_the_overload_channel_tolerates_current_measurement_error() -> None:
 def test_the_accumulator_is_readable_over_the_protocol() -> None:
     sim = MotorControllerSim()
     assert sim.handle_command("GET_OVERLOAD") == "OK 0.00"
+
+
+# --- the current channel is a measurement, not privileged access -------------
+class CurrentSensorReadsLow(MotorControllerSim):
+    """The seam that did not exist until a reviewer pointed out it was missing.
+
+    The temperature sensors could be made to lie while the current channel read
+    exact plant truth, so the finding that a diverse third channel closed three
+    faults was partly self-fulfilling.
+    """
+
+    def __init__(self, factor: float = 0.5) -> None:
+        super().__init__()
+        self.factor = factor
+
+    def read_current_ratio(self) -> float:
+        return super().read_current_ratio() * self.factor
+
+
+def test_the_overload_channel_reads_a_sensor_and_not_the_plant() -> None:
+    """Heating follows actual current; protection follows reported current."""
+    sim = CurrentSensorReadsLow(factor=0.5)
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    sim.inject_stall(True)
+    sim.step(1)
+
+    assert sim.physical_current_ratio() > sim.read_current_ratio(), (
+        "the seam is not doing anything; protection can still see plant truth"
+    )
+    assert sim.temperature_c > AMBIENT_C, "heating must follow ACTUAL current"
+
+
+def test_a_current_sensor_reading_low_delays_the_overload_channel() -> None:
+    """The honest consequence of giving the channel a sensor.
+
+    A channel that reads a sensor can be lied to, exactly like the temperature
+    channels. The accumulator grows as the square of the REPORTED ratio, so a
+    sensor reading half draws a quarter of the real overload.
+    """
+    honest = MotorControllerSim()
+    honest.handle_command(f"SET_SPEED {RATED_RPM}")
+    honest.inject_stall(True)
+    honest.step(1)
+
+    lying = CurrentSensorReadsLow(factor=0.5)
+    lying.handle_command(f"SET_SPEED {RATED_RPM}")
+    lying.inject_stall(True)
+    lying.step(1)
+
+    assert lying.overload_accumulator < honest.overload_accumulator, (
+        "a current sensor reading low must slow the channel down; if it does "
+        "not, the channel is not reading the sensor"
+    )
+
+
+def test_a_blocked_rotor_does_not_automatically_draw_maximum_current() -> None:
+    """Finding 3: the data sheet gives no locked rotor current.
+
+    It gives maximum (24.0 A), rated (5.6 A) and static (6.7 A). A servo on a
+    controlled drive draws what its torque limit allows when blocked, so a
+    blocked axis held at rated current is a slower and primarily THERMAL hazard
+    rather than the fast overcurrent event the argument used to assume for every
+    stall.
+    """
+    fast = MotorControllerSim()
+    fast.handle_command(f"SET_SPEED {RATED_RPM}")
+    fast.inject_stall(True)
+
+    slow = MotorControllerSim()
+    slow.stall_current_ratio = 1.0          # blocked, held at rated current
+    slow.handle_command(f"SET_SPEED {RATED_RPM}")
+    slow.inject_stall(True)
+
+    def trip_step(sim: MotorControllerSim) -> int | None:
+        for step in range(1, 40000):
+            sim.step(1)
+            if sim.state == "FAULT":
+                return step
+        return None
+
+    fast_step, slow_step = trip_step(fast), trip_step(slow)
+    assert fast_step is not None
+    assert slow_step is None or slow_step > fast_step * 10, (
+        "a rotor blocked at rated current should be a slow thermal case, not "
+        "the same fast overcurrent event as one blocked at maximum current"
+    )

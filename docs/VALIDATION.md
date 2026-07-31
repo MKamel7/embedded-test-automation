@@ -129,6 +129,25 @@ channels can detect a contradiction and cannot attribute it; saying which sensor
 is wrong needs a third. That is a property of the architecture, not a gap in the
 tests.
 
+**The two node topology is chosen, not validated.** The data sheet establishes
+natural cooling and IP64, which means no forced fan. It does not establish that
+all heat leaves through a single homogeneous frame node, and the motor is IM B5
+flange mounted, so a real machine also loses heat through the flange into the
+driven structure, through end shields, bearings and the shaft.
+
+This is load bearing rather than cosmetic: the sensor cross check assumes the
+frame cannot exceed the winding while torque is produced, and external flange
+heating or a spatial gradient could violate that with both sensors working. The
+protection argument has not been tested against alternative plausible networks,
+such as a parallel winding to ambient path or an external heat input to the
+frame.
+
+**The current channel reads a sensor, and that sensor's failure modes are only
+partly covered.** Until it was given a seam it read plant truth directly, which
+made the diverse channel result partly self-fulfilling. It now reads a value that
+can be faulted, and the honest consequence is visible: a current sensor stuck at
+rated combined with both temperature sensors lying is an undetected runaway.
+
 **No hardware comparison, and no independence.** Nothing here has been run
 against a motor, and every criterion on this page was written by the same person
 who wrote the model. A criterion its author chose is a weaker test than one an

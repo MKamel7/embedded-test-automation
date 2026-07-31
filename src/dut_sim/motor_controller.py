@@ -91,10 +91,22 @@ THERMAL_MARGIN_K = OVERHEAT_LIMIT_C - RATED_EQUILIBRIUM_C  # 15 K, real
 SPEED_TRACKING = 0.2179
 
 # --- thermal model: a two node network --------------------------------------
-# Losses are generated in the WINDING and leave through the FRAME. On this
-# reference motor that is not a simplification, it is the only path: the data
-# sheet specifies natural cooling, IP64, so there is no fan and no direct
-# winding to air route.
+# Losses are generated in the WINDING and leave through the FRAME. This is a
+# CHOSEN LUMPED APPROXIMATION, not something the data sheet establishes.
+#
+# It was previously described as "not a simplification, the only path", argued
+# from the sheet specifying natural cooling and IP64. That argument does not
+# hold: natural cooling means no forced fan, and it does not prove that all heat
+# leaves through one homogeneous frame node. The reference motor is also IM B5
+# flange mounted, so a real machine additionally exchanges heat through the
+# flange into the driven structure, through end shields and bearings, through
+# the shaft, and by radiation.
+#
+# The distinction matters because the sensor cross check rests on a stronger
+# claim than the topology can support: that the frame cannot exceed the winding
+# while torque is produced. External flange heating, a spatial gradient across
+# the frame, or sensor placement could each violate that with both sensors
+# working perfectly.
 #
 # An earlier version cooled the winding straight to ambient AND separately
 # warmed the frame from the winding, which conserved nothing: at rated
@@ -286,6 +298,23 @@ class MotorControllerSim:
     #: reads back as 0 rpm) produced full rated heating. Both were wrong and they
     #: were the same bug.
     drive_enabled: bool = False
+    #: Current drawn when the rotor is blocked, as a multiple of rated.
+    #:
+    #: NOT automatically the maximum. The data sheet gives maximum (24.0 A),
+    #: rated (5.6 A) and static (6.7 A) current and NO locked rotor current, and
+    #: a servo on a controlled drive does not intrinsically go to maximum when
+    #: blocked: what it draws depends on the configured torque limit, the current
+    #: loop, foldback and the application. Treating a blocked rotor as
+    #: automatically drawing maximum current was an assumption, and it fed the
+    #: heating factor, the trip threshold, every locked rotor budget and the
+    #: channel tolerance figures.
+    #:
+    #: The default is the maximum because that is the fastest and therefore the
+    #: conservative case for thermal protection. Other operating points are real
+    #: and are catalogued separately: a blocked axis held at rated or at static
+    #: current is a slower, primarily THERMAL hazard rather than an overcurrent
+    #: one, which is the distinction the safety argument previously flattened.
+    stall_current_ratio: float = STALL_CURRENT_RATIO
     #: Load the machine is driving. Rated by default, which is the condition the
     #: data sheet's thermal rating actually describes. Set to 0 for a free
     #: running motor, which then barely heats, as a real one does.
@@ -426,11 +455,31 @@ class MotorControllerSim:
         be an artifact of the compression, not physics, so the model carries
         steady state load current only.
         """
+        return self.read_current_ratio()
+
+    def physical_current_ratio(self) -> float:
+        """The current the machine ACTUALLY draws. Plant truth, never read by
+        protection.
+
+        Separated from the reported value because the protection channel that
+        integrates current was previously reading this directly. The temperature
+        sensors could be made to lie and the current channel could not, so the
+        result that a diverse third channel closed three findings was partly
+        self-fulfilling: it had privileged access to the plant.
+        """
         if not self.drive_enabled:
             return 0.0
         if self._stalled:
-            return STALL_CURRENT_RATIO
+            return self.stall_current_ratio
         return self.load_torque_nm / RATED_TORQUE_NM
+
+    def read_current_ratio(self) -> float:
+        """What the current sensor REPORTS, as a multiple of rated.
+
+        A seam, exactly like read_winding_c and read_housing_c. Override it to
+        inject a current sensor that reads low, high, saturates or drifts.
+        """
+        return self.physical_current_ratio()
 
     def _sensor_disagreement(self) -> bool:
         """Do the two thermal channels contradict each other?
@@ -528,14 +577,18 @@ class MotorControllerSim:
             else:
                 self.speed_rpm += (self.target_rpm - self.speed_rpm) * SPEED_TRACKING
 
-            ratio = self._current_ratio()
-            self.temperature_c += HEAT_AT_RATED_C * ratio * ratio
+            # Heating follows the current the machine actually draws.
+            actual = self.physical_current_ratio()
+            self.temperature_c += HEAT_AT_RATED_C * actual * actual
 
             # The third channel. It reads current, never a sensor, which is what
             # makes it diverse; and it knows nothing about the plant's actual
             # cooling, which is what keeps it blind to a degraded one.
+            # The protection integrates what the sensor REPORTS, which is the
+            # only thing a real drive has.
+            sensed = self.read_current_ratio()
             self.overload_accumulator = max(0.0, self.overload_accumulator
-                                            + (ratio * ratio - 1.0)
+                                            + (sensed * sensed - 1.0)
                                             - self.overload_accumulator / OVERLOAD_TAU)
 
             # Series network: the winding's ONLY exit is through the frame, and
@@ -591,17 +644,24 @@ class MotorControllerSim:
         moment one does. Setting the fields explicitly is also what a real
         controller's reset vector does.
         """
+        # CONTROLLER state only. Everything below the line is the machine, and a
+        # controller cannot cool a motor, unjam a shaft, clean a filter or remove
+        # a load by clearing a register.
+        #
+        # This function previously reset all of it while carrying a docstring
+        # saying it did not, and a release note repeating the claim. The tests
+        # did not catch it because they assert the RESET COMMAND is refused while
+        # hot, which is a different property, and because reset() is reachable
+        # directly through the driver without passing that gate at all.
         self.speed_rpm = 0.0
         self.target_rpm = 0.0
-        self.temperature_c = AMBIENT_C
-        self.housing_temperature_c = AMBIENT_C
-        self.cooling_scale = 1.0
-        self._peak_winding_c = AMBIENT_C
+        self.drive_enabled = False
+        self.overload_accumulator = 0.0
         self.health = "OK"
-        self.load_torque_nm = LOAD_TORQUE_NM
         self.state = "IDLE"
         self.fault_reason = None
-        self._stalled = False
+        # NOT cleared, deliberately: temperature_c, housing_temperature_c,
+        # _peak_winding_c, cooling_scale, load_torque_nm, _stalled.
         self._wdg_enabled = False
         self._wdg_budget = 0
         self._wdg_remaining = 0
