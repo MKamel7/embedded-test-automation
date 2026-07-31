@@ -132,7 +132,7 @@ def test_a_lying_winding_sensor_no_longer_defeats_the_protection() -> None:
     assert sim.temperature_c < OVERHEAT_LIMIT_C * 1.5, (
         f"tripped, but only after the winding reached {sim.temperature_c:.0f} C"
     )
-    assert sim.fault_reason in {"SENSOR_IMPLAUSIBLE", "OVERTEMP_HOUSING"}
+    assert sim.fault_reason == "SENSOR_DISAGREEMENT"
 
 
 def test_a_drifting_winding_sensor_is_caught_by_disagreement() -> None:
@@ -144,23 +144,113 @@ def test_a_drifting_winding_sensor_is_caught_by_disagreement() -> None:
     sim = DriftingWindingSensor(offset_c=-60.0)
     step = _run_until_fault(sim)
     assert step is not None
-    assert sim.fault_reason in {"SENSOR_IMPLAUSIBLE", "OVERTEMP_HOUSING"}
+    assert sim.fault_reason == "SENSOR_DISAGREEMENT"
 
 
-def test_the_frame_limit_alone_would_catch_a_stuck_sensor() -> None:
-    """Independence check: disable the cross check, the frame limit still trips.
+def test_the_frame_limit_is_a_slow_backstop_and_not_an_independent_path() -> None:
+    """Correcting a claim this file used to make.
 
-    Two mechanisms that both depend on the same comparison would be one
-    mechanism wearing two names.
+    The frame limit was described as an independent path to the same protection,
+    and a test asserted it caught a stuck sensor. Both were true and both were
+    misleading, because the test never asked WHEN. Measured with the
+    disagreement check disabled, it trips at step 50 with the winding at 643 C,
+    which is not protection against anything.
+
+    It is also now suppressed whenever the channels disagree, since an
+    overtemperature cannot be declared from a channel there is reason to
+    distrust. That leaves it covering one narrow case: a winding sensor reading
+    low, but not low enough to disagree. Narrow is not nothing, and it is a great
+    deal less than independent.
     """
-    class NoCrossCheck(LyingWindingSensor):
-        def _thermal_trip_reason(self) -> str | None:
-            reason = super()._thermal_trip_reason()
-            return None if reason == "SENSOR_IMPLAUSIBLE" else reason
+    class NoDisagreementCheck(LyingWindingSensor):
+        def _sensor_disagreement(self) -> bool:
+            return False
 
-    sim = NoCrossCheck(reports_c=AMBIENT_C)
-    assert _run_until_fault(sim) is not None
+    sim = NoDisagreementCheck(reports_c=AMBIENT_C)
+    step = _run_until_fault(sim, limit=2000)
+    assert step is not None
     assert sim.fault_reason == "OVERTEMP_HOUSING"
+    assert step > 40, "the backstop is expected to be slow; if it is fast now, say so"
+    assert sim.temperature_c > OVERHEAT_LIMIT_C * 3, (
+        "the winding is expected to be far past its limit by the time this "
+        "fires, which is the point of calling it a backstop rather than a path"
+    )
+
+
+# --- the second channel is itself a new failure source ------------------------
+class FrameSensorFailsHigh(MotorControllerSim):
+    """The failure mode adding redundancy introduced, and nobody assessed."""
+
+    def __init__(self, reports_c: float = 120.0) -> None:
+        super().__init__()
+        self.reports_c = reports_c
+
+    def read_housing_c(self) -> float:
+        return self.reports_c
+
+
+def test_a_failed_frame_sensor_is_not_reported_as_an_overtemperature() -> None:
+    """It used to be, and the misdiagnosis mattered.
+
+    120 C is below the winding limit and looks entirely plausible, so nothing
+    about the value announces a fault. The previous version tripped
+    OVERTEMP_HOUSING: an overtemperature the motor was not having, on a
+    perfectly healthy machine at 40 C.
+
+    Two channels can detect a contradiction and cannot attribute it. Saying
+    which sensor is wrong needs a third, and claiming to know with two is how a
+    maintenance team ends up replacing the wrong part.
+    """
+    sim = FrameSensorFailsHigh()
+    sim.handle_command("SET_SPEED 3000")
+    for _ in range(50):
+        sim.step(1)
+        if sim.state == "FAULT":
+            break
+
+    assert sim.state == "FAULT", "a contradicted temperature reading must stop the drive"
+    assert sim.fault_reason == "SENSOR_DISAGREEMENT", (
+        f"reported {sim.fault_reason}, which names a condition the motor is not in"
+    )
+    assert sim.temperature_c < 60, "the winding really was fine"
+
+
+def test_a_failed_frame_sensor_at_idle_annunciates_instead_of_tripping() -> None:
+    """A stationary drive producing no torque is not a thermal hazard.
+
+    The previous version latched a fault on a machine that had never moved,
+    which is a nuisance trip, and nuisance trips are how protection gets
+    bypassed in the field. Availability is a safety property once you count what
+    people do to machines that stop for no reason.
+    """
+    sim = FrameSensorFailsHigh()
+    for _ in range(300):
+        sim.step(1)
+
+    assert sim.state == "IDLE", "an idle drive faulted with no torque commanded"
+    assert sim.handle_command("GET_HEALTH") == "OK SENSOR_DISAGREEMENT", (
+        "the fault must still be visible to maintenance, just not by stopping "
+        "the machine"
+    )
+
+
+def test_a_frame_sensor_reading_low_is_not_detectable() -> None:
+    """Named rather than left to be discovered. This is a residual gap.
+
+    A frame sensor reading LOW never contradicts the winding, because the frame
+    is supposed to be the cooler node. It simply removes the backstop silently,
+    and there is nothing in a two channel design that can notice.
+    """
+    sim = FrameSensorFailsHigh(reports_c=AMBIENT_C)
+    sim.handle_command("SET_SPEED 3000")
+    for _ in range(300):
+        sim.step(1)
+
+    assert sim.state != "FAULT"
+    assert sim.health == "OK", (
+        "if a low reading frame sensor is now detected, the design gained "
+        "something and this test should be rewritten rather than deleted"
+    )
 
 
 # --- false positives, which is where a second channel usually goes wrong ------

@@ -107,6 +107,14 @@ artifact of the compression, so the model carries steady state load current only
 V-03b criterion (same temperature at any speed under the same load) is exactly
 true here and only approximately true of a real machine.
 
+**The second channel's own failure modes are only partly covered.** A frame
+sensor reading HIGH is detected as a disagreement. A frame sensor reading LOW is
+not detectable at all: the frame is supposed to be the cooler node, so a low
+reading never contradicts anything, and it removes the backstop silently. Two
+channels can detect a contradiction and cannot attribute it; saying which sensor
+is wrong needs a third. That is a property of the architecture, not a gap in the
+tests.
+
 **No hardware comparison, and no independence.** Nothing here has been run
 against a motor, and every criterion on this page was written by the same person
 who wrote the model. A criterion its author chose is a weaker test than one an

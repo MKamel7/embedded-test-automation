@@ -9,6 +9,7 @@ protocol like a real device would over UART:
     GET_TEMP          -> OK <deg_c>       (winding sensor)
     GET_HOUSING_TEMP  -> OK <deg_c>       (frame sensor, independent)
     GET_FAULT         -> OK <reason>|OK NONE
+    GET_HEALTH        -> OK OK|OK SENSOR_DISAGREEMENT   (annunciation, no trip)
     GET_STATE         -> OK IDLE|RUNNING|FAULT
     STOP              -> OK
     RESET             -> OK
@@ -175,6 +176,11 @@ class MotorControllerSim:
     #: running motor, which then barely heats, as a real one does.
     load_torque_nm: float = LOAD_TORQUE_NM
     state: str = "IDLE"
+    #: Highest winding temperature the sensor has reported since reset. Bounds
+    #: how hot the frame can legitimately be during cooldown.
+    _peak_winding_c: float = field(default=AMBIENT_C, repr=False)
+    #: A sensor fault that does not warrant stopping. Annunciated, not acted on.
+    health: str = "OK"
     #: Why the drive last tripped, or None. Empty telemetry after a trip means
     #: the cause has to be guessed from a log, which is how a recurring fault
     #: gets reset repeatedly instead of fixed.
@@ -199,6 +205,8 @@ class MotorControllerSim:
             return f"OK {self.read_winding_c():.1f}"
         if cmd == "GET_HOUSING_TEMP":
             return f"OK {self.read_housing_c():.1f}"
+        if cmd == "GET_HEALTH":
+            return f"OK {self.health}"
         if cmd == "GET_FAULT":
             return f"OK {self.fault_reason or 'NONE'}"
         if cmd == "GET_STATE":
@@ -290,36 +298,73 @@ class MotorControllerSim:
             return 0.0
         return self.load_torque_nm / RATED_TORQUE_NM
 
+    def _sensor_disagreement(self) -> bool:
+        """Do the two thermal channels contradict each other?
+
+        Heat is generated in the winding and flows outward, so the frame cannot
+        be the hotter of the two while heat is flowing. When it reads hotter
+        anyway, one of the channels is wrong.
+
+        WHICH one is wrong is NOT knowable from two channels, and pretending
+        otherwise was a real defect in the previous version: a frame sensor
+        failing high was reported as OVERTEMP_HOUSING, an overtemperature the
+        motor was not having. Two channels detect a disagreement; attributing it
+        needs a third, which is what 2oo3 voting is for. So the diagnostic says
+        what is actually known.
+        """
+        return self.read_housing_c() > self.read_winding_c() + PLAUSIBILITY_MARGIN_C
+
+    def _disagreement_is_explained_by_cooldown(self) -> bool:
+        """During cooldown the frame legitimately becomes the hotter node.
+
+        The winding sheds heat faster than the frame it sits inside, so the
+        ordering inverts, and that is not a fault. It is bounded, though: the
+        frame can only be as hot as the winding once was. A frame reading above
+        anything the winding has ever reached is not a cooling motor, it is a
+        broken sensor, and that distinction is what lets an idle drive tell the
+        two apart instead of faulting on both.
+        """
+        return self.read_housing_c() <= self._peak_winding_c + PLAUSIBILITY_MARGIN_C
+
     def _thermal_trip_reason(self) -> str | None:
         """Which thermal protection, if any, demands a trip this step.
 
-        Three checks across two sensors, and each catches something the others
-        cannot:
+        Order matters and encodes a rule worth stating: AN OVERTEMPERATURE
+        CANNOT BE DECLARED FROM A CHANNEL THERE IS REASON TO DISTRUST. So
+        disagreement is evaluated first, and a frame reading above its own limit
+        is only treated as heat when the two channels agree.
 
+          SENSOR_DISAGREEMENT  the channels contradict each other while torque
+                               is commanded. One of them is wrong and the item
+                               cannot tell which, so it stops rather than guess.
           OVERTEMP_WINDING     the primary limit, on the sensor closest to the
                                heat. Fastest, and the one that matters when
                                everything works.
-          OVERTEMP_HOUSING     an independent path to the same protection. Slower,
-                               because the frame lags, but it does not depend on
-                               the winding sensor being honest.
-          SENSOR_IMPLAUSIBLE   neither limit is reached, yet the frame reads
-                               hotter than the winding while the machine is being
-                               driven. That ordering is physically impossible, so
-                               the winding sensor is wrong even though its value
-                               looks perfectly reasonable. This is the only one of
-                               the three that catches a sensor drifting low.
+          OVERTEMP_HOUSING     a slow backstop, and NOT the independent path it
+                               was previously described as. It is suppressed
+                               whenever the channels disagree, which is exactly
+                               the case a lying winding sensor produces, so it
+                               catches only a winding sensor reading slightly
+                               low, not one reading absurdly low. Measured
+                               alone it trips at step 50 with the winding at
+                               643 C, far past any useful budget.
 
-        Named rather than boolean so the cause survives into telemetry. A drive
-        that trips without saying why satisfies the safety requirement and fails
-        the maintenance one.
+        Disagreement WITHOUT commanded torque does not trip. A stationary drive
+        producing no torque is not a thermal hazard, and faulting on it was the
+        previous version's other defect: an idle drive with a dead frame sensor
+        latched a fault having never moved. It is annunciated instead, via
+        GET_HEALTH, so the failure is visible to maintenance without taking the
+        machine down.
         """
         winding, housing = self.read_winding_c(), self.read_housing_c()
+        disagree = self._sensor_disagreement()
+
+        if disagree and self.target_rpm > 0:
+            return "SENSOR_DISAGREEMENT"
         if winding >= OVERHEAT_LIMIT_C:
             return "OVERTEMP_WINDING"
-        if housing >= HOUSING_LIMIT_C:
+        if housing >= HOUSING_LIMIT_C and not disagree:
             return "OVERTEMP_HOUSING"
-        if self.target_rpm > 0 and housing > winding + PLAUSIBILITY_MARGIN_C:
-            return "SENSOR_IMPLAUSIBLE"
         return None
 
     # ---- physics ------------------------------------------------------
@@ -345,6 +390,14 @@ class MotorControllerSim:
             self.housing_temperature_c += (
                 (self.temperature_c - self.housing_temperature_c) * HOUSING_COUPLING
                 - (self.housing_temperature_c - AMBIENT_C) * HOUSING_COOLING
+            )
+
+            self._peak_winding_c = max(self._peak_winding_c, self.read_winding_c())
+            self.health = (
+                "SENSOR_DISAGREEMENT"
+                if self._sensor_disagreement()
+                and not self._disagreement_is_explained_by_cooldown()
+                else "OK"
             )
 
             # Watchdog: an unkicked timer trips FAULT exactly like a thermal
@@ -375,6 +428,8 @@ class MotorControllerSim:
         self.target_rpm = 0.0
         self.temperature_c = AMBIENT_C
         self.housing_temperature_c = AMBIENT_C
+        self._peak_winding_c = AMBIENT_C
+        self.health = "OK"
         self.load_torque_nm = LOAD_TORQUE_NM
         self.state = "IDLE"
         self.fault_reason = None
