@@ -60,8 +60,12 @@ chosen round number.
 Recorded so nobody has to rediscover it:
 
 - **No thermal time constant.** Siemens does not publish one for this motor, so
-  `HEATING_PER_KRPM` and `COOLING_RATE` are chosen rather than fitted, and are
-  marked `[ILLUSTRATIVE]` in the source.
+  `THERMAL_TIME_STEPS` and therefore `COOLING_RATE` are chosen rather than
+  fitted, and are marked `[ILLUSTRATIVE]`. The heating coefficient
+  `HEAT_AT_RATED_C` is **not** chosen: it is `[DERIVED]`, forced by requiring
+  rated continuous duty to equilibrate at the permitted winding temperature per
+  IEC 60034-1 S1 duty. See [`VALIDATION.md`](VALIDATION.md), which records that
+  an earlier model failed exactly this criterion by a factor of 8.3.
 - **No thermal network.** The data sheet gives one thermal class for the
   winding and nothing about how heat reaches the frame, so the second thermal
   node added in v1.5 is grounded in physics rather than in this document:
@@ -83,4 +87,6 @@ Naming a real device fixes the operating envelope and the protection
 thresholds. It does not make this a validated model of that motor, and no such
 claim is made anywhere in this repository. See the limitations section of
 [`TEST_STRATEGY.md`](TEST_STRATEGY.md) for which results would survive contact
-with hardware and which would not.
+with hardware and which would not, and [`VALIDATION.md`](VALIDATION.md) for the
+executable criteria that check the model against this data sheet, including the
+two it originally failed.

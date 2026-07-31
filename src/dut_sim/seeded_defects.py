@@ -63,34 +63,33 @@ class WatchdogOffByOne(MotorControllerSim):
     is invisible to any test that only checks "it eventually trips".
     """
 
+    _granted: bool = False
+
     def step(self, n: int = 1) -> None:
+        """Seed ONLY the off-by-one, by borrowing one step of budget back.
+
+        This used to reimplement the whole of step() with `< 0` substituted for
+        `<= 0`, which meant a copy of the physics living in a file nobody reads
+        until it fails. It duly went stale the moment the thermal model changed,
+        and the efficacy suite failed on an ImportError rather than on the defect
+        it exists to detect: a seeded defect that cannot even be constructed
+        proves nothing about the test suite.
+
+        Granting one extra count before the real countdown runs produces exactly
+        the same observable behaviour, a trip one step late, while inheriting
+        every other behaviour from the device under test.
+        """
         for _ in range(n):
-            if self.state == "FAULT":
-                self.speed_rpm = 0.0
-            elif self._stalled:
-                self.speed_rpm = 0.0
-                if self.target_rpm > 0:
-                    from dut_sim.motor_controller import HEATING_PER_KRPM
-                    self.temperature_c += HEATING_PER_KRPM * self.target_rpm / 1000 * 3
-            else:
-                from dut_sim.motor_controller import HEATING_PER_KRPM, SPEED_TRACKING
-                self.speed_rpm += (self.target_rpm - self.speed_rpm) * SPEED_TRACKING
-                self.temperature_c += HEATING_PER_KRPM * self.speed_rpm / 1000
+            if self._wdg_enabled and self.state != "FAULT" and not self._granted:
+                self._wdg_remaining += 1
+                self._granted = True
+            super().step(1)
 
-            if self._wdg_enabled and self.state != "FAULT":
-                self._wdg_remaining -= 1
-                if self._wdg_remaining < 0:      # the defect: was <= 0
-                    self.trip_fault()
-
-            from dut_sim.motor_controller import (
-                AMBIENT_C,
-                COOLING_RATE,
-                OVERHEAT_LIMIT_C,
-            )
-            if self.temperature_c >= OVERHEAT_LIMIT_C and self.state != "FAULT":
-                self.trip_fault()
-
-            self.temperature_c -= (self.temperature_c - AMBIENT_C) * COOLING_RATE
+    def _cmd_wdg_kick(self) -> str:
+        reply = super()._cmd_wdg_kick()
+        if reply == "OK":
+            self._granted = False       # the extra count is granted per interval
+        return reply
 
 
 #: Every mutant, so the efficacy suite can assert none of them survives.

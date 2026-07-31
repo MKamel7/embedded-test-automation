@@ -65,17 +65,44 @@ OVERHEAT_LIMIT_C = AMBIENT_C + 100.0        # 140 C
 # exponential. Only the time to reach the setpoint is matched, not the shape.
 SPEED_TRACKING = 0.2179
 
-# [ILLUSTRATIVE] Siemens does not publish a thermal time constant for this
-# motor, so the thermal dynamics are NOT fitted. Worse, they cannot be: a 2 kW
-# servo's winding thermal time constant is minutes, while its mechanical
-# response is milliseconds, roughly five orders of magnitude apart. Modelling
-# both faithfully on one step size would need millions of steps to reach a
-# thermal trip, which no test suite can run. The thermal time scale is therefore
-# deliberately COMPRESSED so a thermal fault is reachable in a short test. The
-# ratio of thermal to mechanical response here is not physical, and any thermal
-# latency from this model is in steps only, never in seconds.
-HEATING_PER_KRPM = 0.35    # deg C added per step per 1000 rpm of speed
-COOLING_RATE = 0.08        # fraction of excess-over-ambient shed each step
+# --- thermal model ----------------------------------------------------------
+# VALIDATED AGAINST THE DATA SHEET IN ITS STEADY STATE, NOT IN ITS DYNAMICS, and
+# the split is the point. See docs/VALIDATION.md.
+#
+# What loss actually is. Winding loss is dominated by I^2*R, so heating follows
+# CURRENT, which for a PMSM below field weakening follows TORQUE. It does not
+# follow speed. An earlier version of this model heated in proportion to speed,
+# which meant an unloaded motor spinning fast cooked while a stalled one at
+# locked-rotor current was treated as merely warm. That was backwards, and
+# validation against the data sheet is what found it.
+#
+# [ILLUSTRATIVE] The load the machine is driving, as a fraction of rated. Rated
+# is the default because that is the condition the data sheet's own thermal
+# rating describes.
+LOAD_TORQUE_NM = RATED_TORQUE_NM
+
+# [ILLUSTRATIVE] Thermal time constant, in steps. Siemens publishes none, and it
+# could not be used faithfully if they did: a 2 kW servo's winding constant is
+# MINUTES while its mechanical response is MILLISECONDS, five orders of magnitude
+# apart, and no single step size carries both. This is therefore COMPRESSED, it
+# is the part of the thermal model that is NOT validated, and every thermal
+# latency derived from it is in steps and never in seconds.
+THERMAL_TIME_STEPS = 125.0
+COOLING_RATE = 1.0 / THERMAL_TIME_STEPS      # fraction of excess over ambient per step
+
+# [DERIVED] and the one thermal number that IS validated. Under IEC 60034-1 S1
+# continuous duty, a machine at its rated output settles at exactly the
+# temperature rise its insulation class permits: that is what the rating means.
+# So the heating at rated current is fixed by requiring equilibrium at the
+# permitted winding temperature, rather than chosen. Anything else would make the
+# device contradict its own data sheet at its own rated operating point.
+HEAT_AT_RATED_C = COOLING_RATE * (OVERHEAT_LIMIT_C - AMBIENT_C)
+
+# [DERIVED] A blocked rotor draws locked-rotor current, and resistive heating
+# goes as I^2. The data sheet's maximum to rated current ratio is 24.0 / 5.6, so
+# stall heating is scaled by its square rather than by a guessed factor.
+STALL_CURRENT_RATIO = MAX_CURRENT_A / RATED_CURRENT_A
+STALL_HEATING_FACTOR = STALL_CURRENT_RATIO ** 2   # ~18.4
 
 # --- second temperature source ----------------------------------------------
 # [ILLUSTRATIVE] Losses are generated in the WINDING and flow outward through
@@ -89,8 +116,12 @@ COOLING_RATE = 0.08        # fraction of excess-over-ambient shed each step
 # cannot be checked against anything, so a sensor that lies defeats the
 # protection completely, which is exactly what the fault campaign measured
 # before this existed.
-HOUSING_COUPLING = 0.05    # fraction of the winding-to-frame difference per step
-HOUSING_COOLING = 0.02     # fraction of the frame's excess over ambient per step
+# Scaled to sit just BEHIND the winding's constant, because the frame is the
+# larger thermal mass. Their ratio is what the cross check depends on, so the two
+# must be rescaled together whenever THERMAL_TIME_STEPS moves; a frame that
+# responded faster than the winding would invert the ordering the check rests on.
+HOUSING_COUPLING = 0.005   # fraction of the winding-to-frame difference per step
+HOUSING_COOLING = 0.002    # fraction of the frame's excess over ambient per step
 
 
 def _housing_steady_state(winding_c: float) -> float:
@@ -123,11 +154,6 @@ HOUSING_LIMIT_C = _housing_steady_state(OVERHEAT_LIMIT_C)
 # operation gets disabled by whoever is on call.
 PLAUSIBILITY_MARGIN_C = 5.0
 
-# [DERIVED] A blocked rotor draws locked-rotor current, and resistive heating
-# goes as I^2. The data sheet's maximum to rated current ratio is 24.0 / 5.6,
-# so stall heating is scaled by its square rather than by a guessed factor.
-STALL_HEATING_FACTOR = (MAX_CURRENT_A / RATED_CURRENT_A) ** 2   # ~18.4
-
 # Watchdog budget bounds, in simulation steps.
 WDG_MIN_STEPS = 1
 WDG_MAX_STEPS = 1000
@@ -144,6 +170,10 @@ class MotorControllerSim:
     temperature_c: float = AMBIENT_C
     #: PHYSICAL frame temperature, the second thermal node.
     housing_temperature_c: float = AMBIENT_C
+    #: Load the machine is driving. Rated by default, which is the condition the
+    #: data sheet's thermal rating actually describes. Set to 0 for a free
+    #: running motor, which then barely heats, as a real one does.
+    load_torque_nm: float = LOAD_TORQUE_NM
     state: str = "IDLE"
     #: Why the drive last tripped, or None. Empty telemetry after a trip means
     #: the cause has to be guessed from a log, which is how a recurring fault
@@ -237,6 +267,29 @@ class MotorControllerSim:
         """What the frame sensor reports. A separate device on a separate node."""
         return self.housing_temperature_c
 
+    def _current_ratio(self) -> float:
+        """Winding current as a multiple of rated. Heating goes as its square.
+
+        Torque stands in for current, which holds for a PMSM below field
+        weakening and is the reason the data sheet's torque and current ratings
+        track each other.
+
+        The ACCELERATION torque is deliberately excluded, and that needs saying
+        because it looks like an omission. A real servo does draw peak current
+        while accelerating, but it does so for about 17 ms against a winding
+        thermal constant measured in minutes, so the contribution is nothing.
+        Here the thermal scale is compressed to 125 steps while the mechanical
+        response is still 17, so including it would give a routine acceleration
+        roughly 180 C of heating and trip a perfectly healthy motor. That would
+        be an artifact of the compression, not physics, so the model carries
+        steady state load current only.
+        """
+        if self._stalled:
+            return STALL_CURRENT_RATIO if self.target_rpm > 0 else 0.0
+        if self.target_rpm <= 0:
+            return 0.0
+        return self.load_torque_nm / RATED_TORQUE_NM
+
     def _thermal_trip_reason(self) -> str | None:
         """Which thermal protection, if any, demands a trip this step.
 
@@ -276,14 +329,14 @@ class MotorControllerSim:
             if self.state == "FAULT":
                 self.speed_rpm = 0.0
             elif self._stalled:
-                # rotor blocked: no motion, current keeps heating the windings
+                # Rotor blocked. No motion, and the drive pushes locked-rotor
+                # current trying to move it, which is where the heat comes from.
                 self.speed_rpm = 0.0
-                if self.target_rpm > 0:
-                    self.temperature_c += (HEATING_PER_KRPM * self.target_rpm / 1000
-                                           * STALL_HEATING_FACTOR)
             else:
                 self.speed_rpm += (self.target_rpm - self.speed_rpm) * SPEED_TRACKING
-                self.temperature_c += HEATING_PER_KRPM * self.speed_rpm / 1000
+
+            ratio = self._current_ratio()
+            self.temperature_c += HEAT_AT_RATED_C * ratio * ratio
 
             # The frame is heated BY the winding and cooled by ambient. It is a
             # genuinely separate node with its own state, not a value derived
@@ -322,6 +375,7 @@ class MotorControllerSim:
         self.target_rpm = 0.0
         self.temperature_c = AMBIENT_C
         self.housing_temperature_c = AMBIENT_C
+        self.load_torque_nm = LOAD_TORQUE_NM
         self.state = "IDLE"
         self.fault_reason = None
         self._stalled = False
