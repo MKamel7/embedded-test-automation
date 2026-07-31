@@ -13,12 +13,13 @@ and then it protects nothing.
 
 import pytest
 
+import dut_sim.motor_controller as M
 from dut_sim.motor_controller import (
     AMBIENT_C,
-    HOUSING_LIMIT_C,
     OVERHEAT_LIMIT_C,
-    PLAUSIBILITY_MARGIN_C,
+    RATED_EQUILIBRIUM_C,
     RATED_RPM,
+    RATED_TORQUE_NM,
     MotorControllerSim,
 )
 
@@ -74,7 +75,7 @@ def test_the_trip_cause_is_reported() -> None:
     sim = MotorControllerSim()
     assert sim.handle_command("GET_FAULT") == "OK NONE"
     _run_until_fault(sim)
-    assert sim.handle_command("GET_FAULT") == "OK OVERTEMP_WINDING"
+    assert sim.handle_command("GET_FAULT") == "OK OVERLOAD_I2T"
 
 
 def test_reset_clears_both_the_second_node_and_the_cause() -> None:
@@ -105,18 +106,25 @@ def test_the_frame_lags_the_winding_and_never_leads_it_while_driving() -> None:
         )
 
 
-def test_the_frame_settles_below_the_winding() -> None:
-    """Steady state, which is what HOUSING_LIMIT_C is derived from."""
+def test_the_frame_settles_below_the_winding_at_the_derived_point() -> None:
+    """Steady state, which is what HOUSING_LIMIT_C is derived from.
+
+    Rewritten after review: the previous version held the winding by writing to
+    it every step and suppressed the trip by editing `state`, which tested the
+    manipulation more than the model. Rated duty reaches the same steady state
+    on its own.
+    """
     sim = MotorControllerSim()
-    sim.temperature_c = 140.0
-    for _ in range(2000):
-        sim.housing_temperature_c += 0.0        # hold the winding, advance frame
-        sim.temperature_c = 140.0
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(30000):
         sim.step(1)
-        sim.temperature_c = 140.0
-        if sim.state == "FAULT":
-            sim.state = "RUNNING"               # ignore the winding trip here
-    assert pytest.approx(sim.housing_temperature_c, abs=0.5) == HOUSING_LIMIT_C
+
+    assert sim.state != "FAULT"
+    assert sim.housing_temperature_c < sim.temperature_c, (
+        "the frame must be the cooler node at steady state"
+    )
+    assert sim.housing_temperature_c == pytest.approx(
+        M._frame_steady_state(sim.temperature_c), abs=0.5)
 
 
 # --- detection: what the second source actually buys --------------------------
@@ -130,25 +138,43 @@ def test_a_lying_winding_sensor_no_longer_defeats_the_protection() -> None:
     sim = LyingWindingSensor(reports_c=AMBIENT_C)
     step = _run_until_fault(sim)
     assert step is not None, "the drive never tripped despite a lying sensor"
-    # The ESTIMATOR gets there first now, and inside the limit. The frame cross
-    # check still works and is simply slower, because it has thermal mass and
-    # the estimator does not.
-    assert sim.fault_reason == "OVERTEMP_ESTIMATED"
-    assert sim.temperature_c <= OVERHEAT_LIMIT_C, (
-        f"tripped at {sim.temperature_c:.0f} C, past the limit"
+    # The accumulated overload channel gets there first, and by a wide margin:
+    # it sees locked rotor current immediately, while the frame has to physically
+    # heat up before it can contradict anything.
+    assert sim.fault_reason == "OVERLOAD_I2T"
+    assert sim.temperature_c < RATED_EQUILIBRIUM_C, (
+        f"tripped at {sim.temperature_c:.0f} C; a locked rotor should be stopped "
+        f"long before the winding approaches its rating"
     )
 
 
 def test_a_drifting_winding_sensor_is_caught_by_disagreement() -> None:
-    """The harder case: every individual reading is plausible.
+    """The case only the cross check can reach.
 
-    A 60 C low bias never reaches the winding limit and may never reach the frame
-    limit either, so only the disagreement between the two channels exposes it.
+    Deliberately a MILD overload, 1.05x rated, which the accumulated overload
+    channel ignores by design because such a load is not on its own hazardous.
+    The winding still creeps past its trip point, and a sensor drifting far low
+    hides that. Only the contradiction between the two sensors exposes it.
+
+    The drift has to be large, and the reason is a real cost rather than a
+    choice: the frame sits about 40 K below the winding at rated, and the
+    plausibility margin adds 25 K on top, so drifts smaller than roughly 65 K
+    cannot be distinguished from a legitimately cooler frame. Sizing the margin
+    to survive cooldown buys that insensitivity directly.
     """
-    sim = DriftingWindingSensor(offset_c=-60.0)
-    step = _run_until_fault(sim)
-    assert step is not None
-    assert sim.fault_reason == "SENSOR_DISAGREEMENT"
+    sim = DriftingWindingSensor(offset_c=-90.0)
+    sim.load_torque_nm = RATED_TORQUE_NM * 1.05
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(30000):
+        sim.step(1)
+        if sim.state == "FAULT":
+            break
+
+    assert sim.state == "FAULT", "a far-low sensor under a mild overload went unnoticed"
+    assert sim.fault_reason == "SENSOR_DISAGREEMENT", (
+        f"caught by {sim.fault_reason}; this case exists to exercise the cross "
+        f"check specifically"
+    )
 
 
 def test_the_frame_limit_is_a_slow_backstop_and_not_an_independent_path() -> None:
@@ -167,12 +193,12 @@ def test_the_frame_limit_is_a_slow_backstop_and_not_an_independent_path() -> Non
     deal less than independent.
     """
     class FrameChannelOnly(LyingWindingSensor):
-        """Both faster channels disabled, so the frame limit has to answer alone.
+        """Both faster channels disabled, so the frame limit answers alone.
 
-        The estimator is disabled by holding its state at ambient rather than by
-        filtering the trip reason, because the reason chain returns on the first
-        match and filtering it would skip the frame check entirely rather than
-        reaching it.
+        The overload channel is disabled by holding its accumulator at zero
+        rather than by filtering the trip reason, because the reason chain
+        returns on the first match and filtering would skip the frame check
+        entirely rather than reaching it.
         """
 
         def _sensor_disagreement(self) -> bool:
@@ -181,16 +207,16 @@ def test_the_frame_limit_is_a_slow_backstop_and_not_an_independent_path() -> Non
         def step(self, n: int = 1) -> None:
             for _ in range(n):
                 super().step(1)
-                self.estimated_winding_c = AMBIENT_C
+                self.overload_accumulator = 0.0
 
     sim = FrameChannelOnly(reports_c=AMBIENT_C)
     step = _run_until_fault(sim, limit=2000)
     assert step is not None
     assert sim.fault_reason == "OVERTEMP_HOUSING"
     assert step > 40, "the backstop is expected to be slow; if it is fast now, say so"
-    assert sim.temperature_c > OVERHEAT_LIMIT_C * 3, (
-        "the winding is expected to be far past its limit by the time this "
-        "fires, which is the point of calling it a backstop rather than a path"
+    assert sim.temperature_c > OVERHEAT_LIMIT_C, (
+        "the winding is expected to be past its limit by the time this fires, "
+        "which is the point of calling it a backstop rather than a path"
     )
 
 
@@ -279,33 +305,64 @@ def test_a_healthy_motor_running_hard_never_trips_on_disagreement() -> None:
     assert sim.fault_reason != "SENSOR_IMPLAUSIBLE"
 
 
-def test_cooldown_does_not_trip_even_though_the_frame_ends_up_hotter() -> None:
-    """The reason the cross check is armed only while torque is commanded.
+def test_the_frame_never_overtakes_the_winding_even_on_cooldown() -> None:
+    """The invariant the whole cross check rests on, now actually invariant.
 
-    On cooldown the winding sheds heat faster than the frame it sits inside, so
-    the frame legitimately becomes the hotter node. An ungated check would fault
-    a healthy motor every single time it stopped.
+    It did not always hold. With the winding cooling straight to ambient and the
+    frame warmed separately from it, energy was not conserved and on cooldown the
+    frame legitimately became the hotter node by about 20 K, which is what made a
+    healthy stop-and-restart fault the drive.
+
+    Making the network series, so the winding's only exit is through the frame,
+    removed the phenomenon instead of accommodating it: the winding cannot fall
+    below the node it is dumping heat into. Correct physics retired a workaround.
     """
     sim = MotorControllerSim()
-    sim.handle_command("SET_SPEED 6000")
-    for _ in range(100):                     # settle at the steady running point
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(30000):
         sim.step(1)
     sim.handle_command("STOP")
 
     worst = -99.0
-    for _ in range(400):
+    for _ in range(4000):
         sim.step(1)
         worst = max(worst, sim.housing_temperature_c - sim.temperature_c)
+        assert sim.state != "FAULT", "a healthy motor faulted while cooling down"
 
-    # Measured at 5.15 C from full speed, which is past the 5.0 C margin. So the
-    # gate is doing real work: without it this healthy stop would fault, and the
-    # margin alone would not save it.
-    assert worst > PLAUSIBILITY_MARGIN_C, (
-        f"the frame only overtook the winding by {worst:.2f} C, under the "
-        f"{PLAUSIBILITY_MARGIN_C} C margin, so this test is no longer exercising "
-        f"the case it was written for and the gate now looks unnecessary"
+    assert worst <= 0.1, (
+        f"the frame overtook the winding by {worst:.2f} K; in a series network "
+        f"that cannot happen, so either the topology or the ordering has changed"
     )
-    assert sim.state != "FAULT", "a healthy motor faulted while cooling down"
+
+
+def test_a_healthy_machine_survives_stop_and_restart() -> None:
+    """The nuisance trip an independent review found, pinned.
+
+    Run, stop, wait, restart. The frame is still the hotter node from the
+    previous run, so the channels contradict each other legitimately. The health
+    line always knew that; the TRIP path did not consult it, and faulted a
+    perfectly healthy machine on the first step of the restart.
+    """
+    sim = MotorControllerSim()
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(30000):
+        sim.step(1)
+    sim.handle_command("STOP")
+
+    for pause in (30, 80, 200, 400, 800):
+        restart = MotorControllerSim()
+        restart.temperature_c = sim.temperature_c
+        restart.housing_temperature_c = sim.housing_temperature_c
+        restart._peak_winding_c = sim.temperature_c
+        for _ in range(pause):
+            restart.step(1)
+        assert restart.handle_command(f"SET_SPEED {RATED_RPM}") == "OK"
+        for _ in range(5):
+            restart.step(1)
+        assert restart.state != "FAULT", (
+            f"healthy machine faulted on restart after a {pause} step pause: "
+            f"{restart.fault_reason}"
+        )
 
 
 def test_an_idle_cold_motor_does_not_trip() -> None:
@@ -324,28 +381,27 @@ class BothSensorsLying(LyingWindingSensor):
         return AMBIENT_C
 
 
-def test_the_estimator_catches_what_no_sensor_can() -> None:
+def test_the_overload_channel_catches_what_no_sensor_can() -> None:
     """Both temperature sensors lying, which redundancy alone cannot survive.
 
-    Two channels are two channels only while they fail independently. A model
-    based channel does not read a sensor at all, so a shared supply, reference
-    or harness taking both of them out leaves it entirely unaffected.
+    Two channels are two channels only while they fail independently. This one
+    reads current rather than temperature, so a shared supply, reference or
+    harness taking out both thermometers leaves it entirely unaffected.
     """
     sim = BothSensorsLying(reports_c=AMBIENT_C)
     step = _run_until_fault(sim)
     assert step is not None, "both sensors lying and nothing noticed"
-    assert sim.fault_reason == "OVERTEMP_ESTIMATED"
-    assert step <= 7, f"caught at step {step}, outside the 7 step thermal budget"
-    assert sim.temperature_c <= OVERHEAT_LIMIT_C
+    assert sim.fault_reason == "OVERLOAD_I2T"
+    assert sim.temperature_c < RATED_EQUILIBRIUM_C
 
 
-def test_the_estimator_misses_what_the_sensors_catch() -> None:
+def test_the_overload_channel_misses_what_the_sensors_catch() -> None:
     """The other half of the diversity argument, and the half usually omitted.
 
-    A model based channel only knows what was COMMANDED. When the plant itself
-    degrades, a blocked fan or a clogged filter, the machine runs hotter than
-    nominal and the estimator predicts the nominal. It is blind to exactly the
-    class of fault the sensors exist for.
+    A channel driven by current only knows what the drive is DOING. When the
+    plant itself degrades, an obstructed or fouled installation, the machine runs
+    hotter at the same current and this channel sees nothing at all. It is blind
+    to exactly the class of fault the sensors exist for.
 
     Neither kind is sufficient. That is what makes this diversity rather than
     redundancy, and it is why a third thermometer would have bought much less.
@@ -353,47 +409,64 @@ def test_the_estimator_misses_what_the_sensors_catch() -> None:
     sim = MotorControllerSim()
     sim.cooling_scale = 0.35
     sim.handle_command(f"SET_SPEED {RATED_RPM}")
-    for _ in range(400):
+    for _ in range(40000):
         sim.step(1)
         if sim.state == "FAULT":
             break
 
     assert sim.state == "FAULT"
-    assert sim.fault_reason == "OVERTEMP_WINDING", (
-        "degraded cooling must be caught by measurement; the estimator cannot "
-        "see it by construction"
+    assert sim.fault_reason in {"OVERTEMP_WINDING", "OVERTEMP_HOUSING"}, (
+        f"degraded cooling was caught by {sim.fault_reason}; it must be caught "
+        f"by measurement, since the overload channel cannot see the plant"
     )
-    assert sim.estimated_winding_c < OVERHEAT_LIMIT_C, (
-        f"the estimator predicted {sim.estimated_winding_c:.0f} C and would have "
-        f"tripped, which would mean it can see the plant after all"
+    assert sim.overload_accumulator == pytest.approx(0.0, abs=1e-9), (
+        "the overload channel registered something; it should be at zero, "
+        "because the current never left rated"
     )
 
 
-def test_the_estimator_does_not_trip_a_healthy_machine_at_rated_duty() -> None:
+def test_the_overload_channel_does_not_trip_a_healthy_machine() -> None:
     """A third channel is a third thing that can nuisance trip."""
     sim = MotorControllerSim()
     sim.handle_command(f"SET_SPEED {RATED_RPM}")
-    for _ in range(4000):
+    for _ in range(40000):
         sim.step(1)
     assert sim.state != "FAULT"
-    assert sim.estimated_winding_c < OVERHEAT_LIMIT_C
+    assert sim.overload_accumulator == pytest.approx(0.0, abs=1e-9), (
+        "at rated current the accumulator must sit at zero; that headroom is "
+        "the entire reason this channel replaced a predicted temperature"
+    )
 
 
-def test_the_estimator_tracks_the_winding_when_everything_works() -> None:
-    """It is exact here, and that is a LIMITATION rather than a result.
+def test_the_overload_channel_tolerates_current_measurement_error() -> None:
+    """The property that retired the predicted-temperature channel.
 
-    The estimator uses the same coefficients as the plant, so with no fault
-    injected it predicts the winding perfectly. A real one carries parameter
-    error and would be worse. Asserting the agreement pins the fact that every
-    estimator figure in this project is an upper bound on real performance.
+    A predicted absolute temperature had ZERO tolerance to under-reading: a
+    class 155 machine at a 100 K rated rise runs at 87 percent of its insulation
+    limit, so there is no headroom. An accumulator sits at zero during rated
+    duty, so it has the headroom that a temperature prediction never gets.
     """
-    sim = MotorControllerSim()
-    sim.handle_command(f"SET_SPEED {RATED_RPM}")
-    for _ in range(300):
-        sim.step(1)
-    assert sim.estimated_winding_c == pytest.approx(sim.temperature_c, abs=0.5)
+    class MisreadCurrent(LyingWindingSensor):
+        def __init__(self, err: float) -> None:
+            super().__init__(reports_c=AMBIENT_C)
+            self.err = err
+
+        def _current_ratio(self) -> float:
+            return super()._current_ratio() * self.err
+
+    for err in (0.6, 0.8, 1.0):
+        sim = MisreadCurrent(err)
+        step = _run_until_fault(sim)
+        assert step is not None, f"under-reading current by {1 - err:.0%} lost protection"
+        assert sim.temperature_c < RATED_EQUILIBRIUM_C
+
+    healthy = MotorControllerSim()
+    healthy.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(40000):
+        healthy.step(1)
+    assert healthy.state != "FAULT"
 
 
-def test_the_estimate_is_readable_over_the_protocol() -> None:
+def test_the_accumulator_is_readable_over_the_protocol() -> None:
     sim = MotorControllerSim()
-    assert sim.handle_command("GET_ESTIMATE") == f"OK {AMBIENT_C:.1f}"
+    assert sim.handle_command("GET_OVERLOAD") == "OK 0.00"

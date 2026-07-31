@@ -31,19 +31,21 @@ from dut_sim.motor_controller import (
     HEAT_AT_RATED_C,
     MAX_CURRENT_A,
     MAX_RPM,
-    OVERHEAT_LIMIT_C,
     RATED_CURRENT_A,
+    RATED_EQUILIBRIUM_C,
     RATED_RPM,
     RATED_TORQUE_NM,
     ROTOR_INERTIA_KGM2,
     STEP_MS,
-    THERMAL_TIME_STEPS,
+    THERMAL_MARGIN_K,
+    THERMAL_TRIP_C,
+    WINDING_TIME_STEPS,
     MotorControllerSim,
 )
 
 #: Long enough for the compressed thermal model to reach equilibrium several
 #: times over, so a steady state reading is a steady state and not a transient.
-SETTLE_STEPS = int(THERMAL_TIME_STEPS * 30)
+SETTLE_STEPS = int(WINDING_TIME_STEPS * 30)
 
 
 def _settle(rpm: float, load_nm: float | None = None,
@@ -87,28 +89,62 @@ def test_v01_reaches_rated_speed_in_the_torque_limited_time() -> None:
 
 
 # --- V-02  the one thermal number that IS validated -------------------------
-def test_v02_rated_continuous_duty_settles_at_the_permitted_temperature() -> None:
-    """The definition of the rating, used as an acceptance criterion.
+def test_v02_rated_continuous_duty_settles_at_the_permitted_rise() -> None:
+    """Kept, but no longer load bearing, and the reason is worth recording.
 
-    Under IEC 60034-1 S1 continuous duty a machine at its rated output settles at
-    exactly the temperature rise its insulation class permits. Thermal class
-    155 (F) with dT = 100 K at 40 C ambient therefore says: rated load, rated
-    speed, run forever, expect to approach 140 C and not exceed it.
+    This criterion once caught the model understating rated duty heating by a
+    factor of 8.3. Fixing it by DERIVING the heating coefficient from the
+    permitted rise turned the criterion into a tautology: it now verifies that
+    x/(x/100) == 100 and cannot fail for any value of the time constant. The fix
+    for V-02 retired V-02.
 
-    A model that disagrees with its own data sheet at its own rated operating
-    point is not grounded in that data sheet, whatever its constants are copied
-    from. This is the criterion that caught the original model understating the
-    rise by a factor of 8.3.
+    That is exactly the failure mode a validation suite has to guard against, so
+    it is said here rather than left for a reviewer, and the real work has moved
+    to V-02b below, which relates two independently sourced numbers.
     """
     sim = _settle(RATED_RPM)
     assert sim.state != "FAULT", "rated continuous duty must not trip the drive"
     rise = sim.temperature_c - AMBIENT_C
-    permitted = OVERHEAT_LIMIT_C - AMBIENT_C
+    assert rise == pytest.approx(RATED_EQUILIBRIUM_C - AMBIENT_C, rel=0.02)
 
-    assert rise == pytest.approx(permitted, rel=0.02), (
-        f"rated continuous duty settles {rise:.1f} K above ambient; the data "
-        f"sheet's thermal class implies {permitted:.0f} K"
+
+def test_v02b_rated_duty_sits_a_real_margin_below_the_trip() -> None:
+    """The criterion that replaced V-02, and it can genuinely fail.
+
+    It relates two numbers the model does NOT derive from each other: the
+    permitted rise at rated output (100 K) and the insulation class limit
+    (155 C). Both come from the series documentation; neither is computed from
+    the other.
+
+    The version of this model that shipped had the trip AT the rated
+    equilibrium, leaving 3.4e-13 K of margin. Rated duty passed only because a
+    geometric series converges from below and floating point rounded the last
+    bit down, and a 0.1 percent cooling degradation tripped a healthy drive.
+    """
+    sim = _settle(RATED_RPM)
+    margin = THERMAL_TRIP_C - sim.temperature_c
+    assert margin > 5.0, (
+        f"only {margin:.3f} K between rated continuous duty and the trip; "
+        f"protection needs somewhere to sit above normal operation"
     )
+    assert THERMAL_MARGIN_K > 0, "the trip must not equal the rated equilibrium"
+
+
+def test_v02c_a_small_cooling_degradation_does_not_trip_a_healthy_drive() -> None:
+    """The consequence of V-02b, measured rather than argued.
+
+    With zero margin a 0.1 percent degradation tripped at step 861. Normal
+    installation variation must not look like a fault.
+    """
+    for scale in (0.999, 0.99):
+        sim = MotorControllerSim()
+        sim.cooling_scale = scale
+        sim.handle_command(f"SET_SPEED {RATED_RPM}")
+        for _ in range(SETTLE_STEPS):
+            sim.step(1)
+        assert sim.state != "FAULT", (
+            f"{(1 - scale) * 100:.1f} percent cooling degradation tripped the drive"
+        )
 
 
 # --- V-03  the loss mechanism -----------------------------------------------
@@ -187,8 +223,17 @@ def test_v04_a_stalled_rotor_trips_well_inside_the_campaign_budget() -> None:
     for step in range(1, 101):
         sim.step(1)
         if sim.state == "FAULT":
-            assert sim.fault_reason == "OVERTEMP_WINDING"
-            assert step <= 20, f"stall took {step} steps to trip"
+            # The accumulated overload channel gets there first, and by a long
+            # way: locked rotor current is 4.3x rated, so the accumulator crosses
+            # its budget in a couple of steps while the winding is still cool.
+            # That is the correct treatment of a locked rotor, which is an
+            # OVERCURRENT event rather than a thermal one.
+            assert sim.fault_reason == "OVERLOAD_I2T"
+            assert step <= 5, f"stall took {step} steps to trip"
+            assert sim.temperature_c < RATED_EQUILIBRIUM_C, (
+                "the drive should stop a locked rotor long before the winding "
+                "is anywhere near its rating"
+            )
             return
     pytest.fail("a stalled rotor at locked-rotor current never tripped")
 
@@ -203,15 +248,14 @@ def test_the_thermal_time_constant_is_marked_as_unvalidated() -> None:
     the constant to something real, this test should be deleted along with the
     warnings it guards, deliberately and not by accident.
     """
+    import inspect
+
     from dut_sim import motor_controller
 
-    source = motor_controller.__doc__ or ""
-    constants = motor_controller.THERMAL_TIME_STEPS
-    assert constants > 0
-    import inspect
+    assert motor_controller.WINDING_TIME_STEPS > 0
     text = inspect.getsource(motor_controller)
-    assert "COMPRESSED" in text, (
+    assert "compressed" in text.lower(), (
         "the thermal time scale is compressed and the source must say so, or a "
         "reader will take latencies in steps for latencies in time"
     )
-    assert "never in seconds" in text or "never in seconds" in source
+    assert "never in seconds" in text

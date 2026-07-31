@@ -47,13 +47,31 @@ from the SIMOTICS S-1FK2 series documentation, and applies to this frame size
 
 | Parameter | Value | Used for |
 |---|---|---|
-| Thermal class | 155 (F) | the overheat trip |
-| Permitted winding overtemperature | dT = 100 K per EN/IEC 60034-1 | the overheat trip |
+| Thermal class | 155 (F) | the insulation limit, 155 °C |
+| Permitted winding overtemperature | dT = 100 K | the rated equilibrium, 140 °C |
 | Rated ambient | 40 °C | `AMBIENT_C` |
+
+**These are `[SERIES]`, not `[DS]`, and the source previously mislabelled them.**
+A review grepped the archived article data sheet for `155`, `thermal`, `class`,
+`insulation`, `IEC` and `60034` and found **zero hits for every one**. The only
+ambient temperature in that document is 20 °C, in a footnote about brake holding
+current. This page always said the article sheet carries no thermal data; the
+code contradicted it, and every trip threshold descended from the mislabelled
+lines.
+
+**How forced is 100 K?** Less than previously claimed. IEC 60034-1 permits
+**105 K by resistance** for class 155 (F); the 100 K used here is Siemens' own
+more conservative figure, so it is a round number chosen one level up. What IS
+derived is the separation: the rated equilibrium follows from the permitted rise,
+the trip follows from the class limit, and they are independent numbers rather
+than the same one used twice.
 | Thermal class 155 (F), applied to the frame node | dT = 100 K | `HOUSING_LIMIT_C`, via the frame's steady state at that winding limit |
 
-`OVERHEAT_LIMIT_C` is therefore 40 + 100 = 140 °C, a derived limit rather than a
-chosen round number.
+So `RATED_EQUILIBRIUM_C` is 40 + 100 = 140 °C and `OVERHEAT_LIMIT_C` is the class
+limit, 155 °C, leaving **15 K of real margin** between normal duty and the trip.
+An earlier version set the trip equal to the rated equilibrium, which left
+3.4e-13 K: rated duty passed only because a geometric series converges from
+below, and a 0.1% cooling degradation tripped a healthy drive.
 
 ### What this source does NOT provide
 
