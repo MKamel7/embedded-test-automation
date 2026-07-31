@@ -107,6 +107,20 @@ artifact of the compression, so the model carries steady state load current only
 V-03b criterion (same temperature at any speed under the same load) is exactly
 true here and only approximately true of a real machine.
 
+**The estimator is exact here, and that is a limitation rather than a result.**
+The third channel integrates commanded loss using the same coefficients as the
+plant, so with no fault injected it predicts the winding perfectly. A real
+estimator carries parameter error, unknown ambient and unknown cooling
+conditions, and would be worse. Nothing in this model can represent that, because
+there is only one set of parameters, so **every estimator figure in this project
+is an upper bound on what a real one would achieve.** There is a test pinning the
+agreement so the assumption stays visible.
+
+What the model DOES represent honestly is the estimator's blindness to the plant:
+`cooling_scale` degrades real cooling without the estimator seeing it, and the
+sensors catch what the estimator cannot. That half of the diversity argument is
+demonstrated rather than assumed.
+
 **The second channel's own failure modes are only partly covered.** A frame
 sensor reading HIGH is detected as a disagreement. A frame sensor reading LOW is
 not detectable at all: the frame is supposed to be the cooler node, so a low

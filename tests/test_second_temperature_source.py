@@ -18,6 +18,7 @@ from dut_sim.motor_controller import (
     HOUSING_LIMIT_C,
     OVERHEAT_LIMIT_C,
     PLAUSIBILITY_MARGIN_C,
+    RATED_RPM,
     MotorControllerSim,
 )
 
@@ -129,10 +130,13 @@ def test_a_lying_winding_sensor_no_longer_defeats_the_protection() -> None:
     sim = LyingWindingSensor(reports_c=AMBIENT_C)
     step = _run_until_fault(sim)
     assert step is not None, "the drive never tripped despite a lying sensor"
-    assert sim.temperature_c < OVERHEAT_LIMIT_C * 1.5, (
-        f"tripped, but only after the winding reached {sim.temperature_c:.0f} C"
+    # The ESTIMATOR gets there first now, and inside the limit. The frame cross
+    # check still works and is simply slower, because it has thermal mass and
+    # the estimator does not.
+    assert sim.fault_reason == "OVERTEMP_ESTIMATED"
+    assert sim.temperature_c <= OVERHEAT_LIMIT_C, (
+        f"tripped at {sim.temperature_c:.0f} C, past the limit"
     )
-    assert sim.fault_reason == "SENSOR_DISAGREEMENT"
 
 
 def test_a_drifting_winding_sensor_is_caught_by_disagreement() -> None:
@@ -162,11 +166,24 @@ def test_the_frame_limit_is_a_slow_backstop_and_not_an_independent_path() -> Non
     low, but not low enough to disagree. Narrow is not nothing, and it is a great
     deal less than independent.
     """
-    class NoDisagreementCheck(LyingWindingSensor):
+    class FrameChannelOnly(LyingWindingSensor):
+        """Both faster channels disabled, so the frame limit has to answer alone.
+
+        The estimator is disabled by holding its state at ambient rather than by
+        filtering the trip reason, because the reason chain returns on the first
+        match and filtering it would skip the frame check entirely rather than
+        reaching it.
+        """
+
         def _sensor_disagreement(self) -> bool:
             return False
 
-    sim = NoDisagreementCheck(reports_c=AMBIENT_C)
+        def step(self, n: int = 1) -> None:
+            for _ in range(n):
+                super().step(1)
+                self.estimated_winding_c = AMBIENT_C
+
+    sim = FrameChannelOnly(reports_c=AMBIENT_C)
     step = _run_until_fault(sim, limit=2000)
     assert step is not None
     assert sim.fault_reason == "OVERTEMP_HOUSING"
@@ -297,3 +314,86 @@ def test_an_idle_cold_motor_does_not_trip() -> None:
         sim.step(1)
     assert sim.state == "IDLE"
     assert sim.fault_reason is None
+
+
+# --- the third channel, and why it is diverse rather than redundant ----------
+class BothSensorsLying(LyingWindingSensor):
+    """Common cause: one root cause takes both thermal sensors."""
+
+    def read_housing_c(self) -> float:
+        return AMBIENT_C
+
+
+def test_the_estimator_catches_what_no_sensor_can() -> None:
+    """Both temperature sensors lying, which redundancy alone cannot survive.
+
+    Two channels are two channels only while they fail independently. A model
+    based channel does not read a sensor at all, so a shared supply, reference
+    or harness taking both of them out leaves it entirely unaffected.
+    """
+    sim = BothSensorsLying(reports_c=AMBIENT_C)
+    step = _run_until_fault(sim)
+    assert step is not None, "both sensors lying and nothing noticed"
+    assert sim.fault_reason == "OVERTEMP_ESTIMATED"
+    assert step <= 7, f"caught at step {step}, outside the 7 step thermal budget"
+    assert sim.temperature_c <= OVERHEAT_LIMIT_C
+
+
+def test_the_estimator_misses_what_the_sensors_catch() -> None:
+    """The other half of the diversity argument, and the half usually omitted.
+
+    A model based channel only knows what was COMMANDED. When the plant itself
+    degrades, a blocked fan or a clogged filter, the machine runs hotter than
+    nominal and the estimator predicts the nominal. It is blind to exactly the
+    class of fault the sensors exist for.
+
+    Neither kind is sufficient. That is what makes this diversity rather than
+    redundancy, and it is why a third thermometer would have bought much less.
+    """
+    sim = MotorControllerSim()
+    sim.cooling_scale = 0.35
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(400):
+        sim.step(1)
+        if sim.state == "FAULT":
+            break
+
+    assert sim.state == "FAULT"
+    assert sim.fault_reason == "OVERTEMP_WINDING", (
+        "degraded cooling must be caught by measurement; the estimator cannot "
+        "see it by construction"
+    )
+    assert sim.estimated_winding_c < OVERHEAT_LIMIT_C, (
+        f"the estimator predicted {sim.estimated_winding_c:.0f} C and would have "
+        f"tripped, which would mean it can see the plant after all"
+    )
+
+
+def test_the_estimator_does_not_trip_a_healthy_machine_at_rated_duty() -> None:
+    """A third channel is a third thing that can nuisance trip."""
+    sim = MotorControllerSim()
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(4000):
+        sim.step(1)
+    assert sim.state != "FAULT"
+    assert sim.estimated_winding_c < OVERHEAT_LIMIT_C
+
+
+def test_the_estimator_tracks_the_winding_when_everything_works() -> None:
+    """It is exact here, and that is a LIMITATION rather than a result.
+
+    The estimator uses the same coefficients as the plant, so with no fault
+    injected it predicts the winding perfectly. A real one carries parameter
+    error and would be worse. Asserting the agreement pins the fact that every
+    estimator figure in this project is an upper bound on real performance.
+    """
+    sim = MotorControllerSim()
+    sim.handle_command(f"SET_SPEED {RATED_RPM}")
+    for _ in range(300):
+        sim.step(1)
+    assert sim.estimated_winding_c == pytest.approx(sim.temperature_c, abs=0.5)
+
+
+def test_the_estimate_is_readable_over_the_protocol() -> None:
+    sim = MotorControllerSim()
+    assert sim.handle_command("GET_ESTIMATE") == f"OK {AMBIENT_C:.1f}"

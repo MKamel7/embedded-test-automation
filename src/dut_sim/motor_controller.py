@@ -8,6 +8,7 @@ protocol like a real device would over UART:
     GET_SPEED         -> OK <rpm>
     GET_TEMP          -> OK <deg_c>       (winding sensor)
     GET_HOUSING_TEMP  -> OK <deg_c>       (frame sensor, independent)
+    GET_ESTIMATE      -> OK <deg_c>       (model based, measures nothing)
     GET_FAULT         -> OK <reason>|OK NONE
     GET_HEALTH        -> OK OK|OK SENSOR_DISAGREEMENT   (annunciation, no trip)
     GET_STATE         -> OK IDLE|RUNNING|FAULT
@@ -155,6 +156,35 @@ HOUSING_LIMIT_C = _housing_steady_state(OVERHEAT_LIMIT_C)
 # operation gets disabled by whoever is on call.
 PLAUSIBILITY_MARGIN_C = 5.0
 
+# --- third channel: a model based estimator ---------------------------------
+# DIVERSE, not redundant, and the distinction is the whole point. The two
+# temperature sensors are the same KIND of thing measured in two places, so
+# anything that defeats measurement defeats both: a common supply, a common
+# reference, or simply both being dead. This channel does not measure
+# temperature at all. It integrates the loss the drive is commanding and
+# predicts what the winding must be doing.
+#
+# What that buys, and what it costs, are opposite and both real:
+#
+#   It cannot be fooled by a sensor, because it does not read one. It catches a
+#   lying winding sensor, a lying frame sensor, and both lying at once.
+#
+#   It cannot see the plant, because it only knows what was commanded. If the
+#   real cooling degrades, a blocked fan or a clogged filter, the machine runs
+#   hotter than nominal and this channel predicts the nominal. It misses exactly
+#   what the sensors catch.
+#
+# So neither kind is sufficient and the pair is not redundancy, it is coverage
+# of two disjoint failure classes. That argument is what "diverse" means and it
+# is why adding a third thermometer would have bought much less.
+#
+# [ILLUSTRATIVE] and a limitation worth stating plainly: here the estimator uses
+# the same coefficients as the plant, so in the healthy case it is exact. A real
+# one carries parameter error and its performance would be worse. Nothing in
+# this model can represent that, because there is only one set of parameters, so
+# every estimator result here is an UPPER BOUND on what a real one would achieve.
+ESTIMATOR_ENABLED = True
+
 # Watchdog budget bounds, in simulation steps.
 WDG_MIN_STEPS = 1
 WDG_MAX_STEPS = 1000
@@ -176,6 +206,12 @@ class MotorControllerSim:
     #: running motor, which then barely heats, as a real one does.
     load_torque_nm: float = LOAD_TORQUE_NM
     state: str = "IDLE"
+    #: The third channel's prediction. Not a measurement.
+    estimated_winding_c: float = AMBIENT_C
+    #: Actual cooling relative to nominal. 1.0 is a clean machine; below that is
+    #: a blocked fan or a clogged filter, which the estimator cannot see because
+    #: it assumes nominal.
+    cooling_scale: float = 1.0
     #: Highest winding temperature the sensor has reported since reset. Bounds
     #: how hot the frame can legitimately be during cooldown.
     _peak_winding_c: float = field(default=AMBIENT_C, repr=False)
@@ -203,6 +239,8 @@ class MotorControllerSim:
             return f"OK {self.speed_rpm:.0f}"
         if cmd == "GET_TEMP":
             return f"OK {self.read_winding_c():.1f}"
+        if cmd == "GET_ESTIMATE":
+            return f"OK {self.estimated_winding_c:.1f}"
         if cmd == "GET_HOUSING_TEMP":
             return f"OK {self.read_housing_c():.1f}"
         if cmd == "GET_HEALTH":
@@ -363,6 +401,11 @@ class MotorControllerSim:
             return "SENSOR_DISAGREEMENT"
         if winding >= OVERHEAT_LIMIT_C:
             return "OVERTEMP_WINDING"
+        if ESTIMATOR_ENABLED and self.estimated_winding_c >= OVERHEAT_LIMIT_C:
+            # Ranked below the winding sensor because a working sensor is the
+            # better instrument, and above the frame because this one has no
+            # thermal mass and therefore no lag.
+            return "OVERTEMP_ESTIMATED"
         if housing >= HOUSING_LIMIT_C and not disagree:
             return "OVERTEMP_HOUSING"
         return None
@@ -382,6 +425,12 @@ class MotorControllerSim:
 
             ratio = self._current_ratio()
             self.temperature_c += HEAT_AT_RATED_C * ratio * ratio
+
+            # The estimator runs on the SAME commanded current and the NOMINAL
+            # cooling rate. It never reads a sensor, which is what makes it
+            # diverse, and it never sees cooling_scale, which is what makes it
+            # blind to a degraded plant.
+            self.estimated_winding_c += HEAT_AT_RATED_C * ratio * ratio
 
             # The frame is heated BY the winding and cooled by ambient. It is a
             # genuinely separate node with its own state, not a value derived
@@ -413,7 +462,15 @@ class MotorControllerSim:
             if reason is not None and self.state != "FAULT":
                 self.trip_fault(reason)
 
-            self.temperature_c -= (self.temperature_c - AMBIENT_C) * COOLING_RATE
+            # Both cooled AFTER the trip check, and the symmetry matters. The
+            # protection reacts to the peak, so evaluating the estimate at a
+            # different point in the cycle than the measurement would make the
+            # estimator look a step slower than it is, for no reason but
+            # bookkeeping.
+            self.temperature_c -= (
+                (self.temperature_c - AMBIENT_C) * COOLING_RATE * self.cooling_scale)
+            self.estimated_winding_c -= (
+                (self.estimated_winding_c - AMBIENT_C) * COOLING_RATE)
 
     def reset(self) -> None:
         """Return every field to its power-on value.
@@ -428,6 +485,8 @@ class MotorControllerSim:
         self.target_rpm = 0.0
         self.temperature_c = AMBIENT_C
         self.housing_temperature_c = AMBIENT_C
+        self.estimated_winding_c = AMBIENT_C
+        self.cooling_scale = 1.0
         self._peak_winding_c = AMBIENT_C
         self.health = "OK"
         self.load_torque_nm = LOAD_TORQUE_NM
