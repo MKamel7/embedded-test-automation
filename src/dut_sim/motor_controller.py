@@ -6,7 +6,9 @@ protocol like a real device would over UART:
 
     SET_SPEED <rpm>   -> OK | ERR RANGE | ERR STATE
     GET_SPEED         -> OK <rpm>
-    GET_TEMP          -> OK <deg_c>
+    GET_TEMP          -> OK <deg_c>       (winding sensor)
+    GET_HOUSING_TEMP  -> OK <deg_c>       (frame sensor, independent)
+    GET_FAULT         -> OK <reason>|OK NONE
     GET_STATE         -> OK IDLE|RUNNING|FAULT
     STOP              -> OK
     RESET             -> OK
@@ -75,6 +77,52 @@ SPEED_TRACKING = 0.2179
 HEATING_PER_KRPM = 0.35    # deg C added per step per 1000 rpm of speed
 COOLING_RATE = 0.08        # fraction of excess-over-ambient shed each step
 
+# --- second temperature source ----------------------------------------------
+# [ILLUSTRATIVE] Losses are generated in the WINDING and flow outward through
+# the stator iron to the frame, then to ambient. The frame is therefore a
+# second thermal node: cooler than the winding, slower to move, and heated by
+# it rather than independently. Siemens publishes no thermal network for this
+# motor, so these two coefficients are chosen, not fitted, and they inherit the
+# compressed time scale of the winding model above.
+#
+# The point of the node is not fidelity. It is INDEPENDENCE. A single sensor
+# cannot be checked against anything, so a sensor that lies defeats the
+# protection completely, which is exactly what the fault campaign measured
+# before this existed.
+HOUSING_COUPLING = 0.05    # fraction of the winding-to-frame difference per step
+HOUSING_COOLING = 0.02     # fraction of the frame's excess over ambient per step
+
+
+def _housing_steady_state(winding_c: float) -> float:
+    """Frame temperature once heat in equals heat out, for a held winding.
+
+    (W - H) * coupling == (H - A) * cooling, solved for H.
+    """
+    return ((HOUSING_COUPLING * winding_c + HOUSING_COOLING * AMBIENT_C)
+            / (HOUSING_COUPLING + HOUSING_COOLING))
+
+
+# [DERIVED] The frame's own trip point is where the frame settles when the
+# winding is exactly at its permitted limit, so the two thresholds describe the
+# same physical condition seen from two places. Deriving it this way rather than
+# picking a round number means the second channel cannot be quietly tuned to
+# whatever makes a test pass. Works out at 111.4 C.
+HOUSING_LIMIT_C = _housing_steady_state(OVERHEAT_LIMIT_C)
+
+# [DERIVED] Heat flows from the winding outward, so while the machine is being
+# driven the frame is always the COOLER of the two. A frame reading above the
+# winding reading is not a hot motor, it is an impossible one, and the only
+# explanation is that the winding sensor is wrong. The margin absorbs the step
+# discretisation only; it is not a tolerance band on a real disagreement.
+#
+# The check is armed only while torque is commanded, and that restriction is
+# load bearing rather than cautious. During COOLDOWN the ordering legitimately
+# inverts: the winding sheds heat faster than the frame it is buried in, so the
+# frame is briefly the hotter node. Checking then would fault a healthy motor
+# every time it stopped, and a protection mechanism that fires on normal
+# operation gets disabled by whoever is on call.
+PLAUSIBILITY_MARGIN_C = 5.0
+
 # [DERIVED] A blocked rotor draws locked-rotor current, and resistive heating
 # goes as I^2. The data sheet's maximum to rated current ratio is 24.0 / 5.6,
 # so stall heating is scaled by its square rather than by a guessed factor.
@@ -91,8 +139,16 @@ class MotorControllerSim:
 
     speed_rpm: float = 0.0
     target_rpm: float = 0.0
+    #: PHYSICAL winding temperature. What the motor is actually doing, which is
+    #: not necessarily what any sensor reports: see read_winding_c().
     temperature_c: float = AMBIENT_C
+    #: PHYSICAL frame temperature, the second thermal node.
+    housing_temperature_c: float = AMBIENT_C
     state: str = "IDLE"
+    #: Why the drive last tripped, or None. Empty telemetry after a trip means
+    #: the cause has to be guessed from a log, which is how a recurring fault
+    #: gets reset repeatedly instead of fixed.
+    fault_reason: str | None = None
     _stalled: bool = field(default=False, repr=False)
     _wdg_enabled: bool = field(default=False, repr=False)
     _wdg_budget: int = field(default=0, repr=False)
@@ -110,7 +166,11 @@ class MotorControllerSim:
         if cmd == "GET_SPEED":
             return f"OK {self.speed_rpm:.0f}"
         if cmd == "GET_TEMP":
-            return f"OK {self.temperature_c:.1f}"
+            return f"OK {self.read_winding_c():.1f}"
+        if cmd == "GET_HOUSING_TEMP":
+            return f"OK {self.read_housing_c():.1f}"
+        if cmd == "GET_FAULT":
+            return f"OK {self.fault_reason or 'NONE'}"
         if cmd == "GET_STATE":
             return f"OK {self.state}"
         if cmd == "STOP":
@@ -161,6 +221,54 @@ class MotorControllerSim:
         self._wdg_remaining = self._wdg_budget
         return "OK"
 
+    # ---- sensors ------------------------------------------------------
+    # A SEAM, deliberately. On this device the reported temperatures equal the
+    # physical ones, because its sensors work. Fault injection that wants a
+    # lying sensor overrides these methods rather than editing the physics,
+    # which keeps the lie where a real fault puts it: in the measurement, not in
+    # the motor. Protection reads through here and never touches the fields, so
+    # a test cannot accidentally give the protection privileged access to the
+    # truth that a real controller would not have.
+    def read_winding_c(self) -> float:
+        """What the winding sensor reports."""
+        return self.temperature_c
+
+    def read_housing_c(self) -> float:
+        """What the frame sensor reports. A separate device on a separate node."""
+        return self.housing_temperature_c
+
+    def _thermal_trip_reason(self) -> str | None:
+        """Which thermal protection, if any, demands a trip this step.
+
+        Three checks across two sensors, and each catches something the others
+        cannot:
+
+          OVERTEMP_WINDING     the primary limit, on the sensor closest to the
+                               heat. Fastest, and the one that matters when
+                               everything works.
+          OVERTEMP_HOUSING     an independent path to the same protection. Slower,
+                               because the frame lags, but it does not depend on
+                               the winding sensor being honest.
+          SENSOR_IMPLAUSIBLE   neither limit is reached, yet the frame reads
+                               hotter than the winding while the machine is being
+                               driven. That ordering is physically impossible, so
+                               the winding sensor is wrong even though its value
+                               looks perfectly reasonable. This is the only one of
+                               the three that catches a sensor drifting low.
+
+        Named rather than boolean so the cause survives into telemetry. A drive
+        that trips without saying why satisfies the safety requirement and fails
+        the maintenance one.
+        """
+        winding, housing = self.read_winding_c(), self.read_housing_c()
+        if winding >= OVERHEAT_LIMIT_C:
+            return "OVERTEMP_WINDING"
+        if housing >= HOUSING_LIMIT_C:
+            return "OVERTEMP_HOUSING"
+        if self.target_rpm > 0 and housing > winding + PLAUSIBILITY_MARGIN_C:
+            return "SENSOR_IMPLAUSIBLE"
+        return None
+
     # ---- physics ------------------------------------------------------
     def step(self, n: int = 1) -> None:
         """Advance the simulation n steps."""
@@ -177,17 +285,27 @@ class MotorControllerSim:
                 self.speed_rpm += (self.target_rpm - self.speed_rpm) * SPEED_TRACKING
                 self.temperature_c += HEATING_PER_KRPM * self.speed_rpm / 1000
 
+            # The frame is heated BY the winding and cooled by ambient. It is a
+            # genuinely separate node with its own state, not a value derived
+            # from the winding at protection time, which is what makes it usable
+            # as a check ON the winding.
+            self.housing_temperature_c += (
+                (self.temperature_c - self.housing_temperature_c) * HOUSING_COUPLING
+                - (self.housing_temperature_c - AMBIENT_C) * HOUSING_COOLING
+            )
+
             # Watchdog: an unkicked timer trips FAULT exactly like a thermal
             # protection circuit would, once the step budget runs out.
             if self._wdg_enabled and self.state != "FAULT":
                 self._wdg_remaining -= 1
                 if self._wdg_remaining <= 0:
-                    self.trip_fault()
+                    self.trip_fault("WATCHDOG")
 
             # Trip BEFORE cooling: the protection circuit reacts to the peak
             # winding temperature, not the post-dissipation average.
-            if self.temperature_c >= OVERHEAT_LIMIT_C and self.state != "FAULT":
-                self.trip_fault()
+            reason = self._thermal_trip_reason()
+            if reason is not None and self.state != "FAULT":
+                self.trip_fault(reason)
 
             self.temperature_c -= (self.temperature_c - AMBIENT_C) * COOLING_RATE
 
@@ -203,15 +321,18 @@ class MotorControllerSim:
         self.speed_rpm = 0.0
         self.target_rpm = 0.0
         self.temperature_c = AMBIENT_C
+        self.housing_temperature_c = AMBIENT_C
         self.state = "IDLE"
+        self.fault_reason = None
         self._stalled = False
         self._wdg_enabled = False
         self._wdg_budget = 0
         self._wdg_remaining = 0
 
     # ---- fault injection (test backdoor, not part of the protocol) ----
-    def trip_fault(self) -> None:
+    def trip_fault(self, reason: str = "TRIP") -> None:
         self.state = "FAULT"
+        self.fault_reason = reason
         self.speed_rpm = 0.0
         self.target_rpm = 0.0
 

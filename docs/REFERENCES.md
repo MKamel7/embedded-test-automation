@@ -50,6 +50,7 @@ from the SIMOTICS S-1FK2 series documentation, and applies to this frame size
 | Thermal class | 155 (F) | the overheat trip |
 | Permitted winding overtemperature | dT = 100 K per EN/IEC 60034-1 | the overheat trip |
 | Rated ambient | 40 °C | `AMBIENT_C` |
+| Thermal class 155 (F), applied to the frame node | dT = 100 K | `HOUSING_LIMIT_C`, via the frame's steady state at that winding limit |
 
 `OVERHEAT_LIMIT_C` is therefore 40 + 100 = 140 °C, a derived limit rather than a
 chosen round number.
@@ -61,6 +62,17 @@ Recorded so nobody has to rediscover it:
 - **No thermal time constant.** Siemens does not publish one for this motor, so
   `HEATING_PER_KRPM` and `COOLING_RATE` are chosen rather than fitted, and are
   marked `[ILLUSTRATIVE]` in the source.
+- **No thermal network.** The data sheet gives one thermal class for the
+  winding and nothing about how heat reaches the frame, so the second thermal
+  node added in v1.5 is grounded in physics rather than in this document:
+  `HOUSING_COUPLING` and `HOUSING_COOLING` are `[ILLUSTRATIVE]`. What *is*
+  defensible without the data sheet is the ORDERING, that losses are generated
+  in the winding and flow outward, so the frame is the cooler node while the
+  machine is driven. The protection rests on that ordering, not on the two
+  coefficients, which is why the cross check survives their values being wrong.
+  `HOUSING_LIMIT_C` is then `[DERIVED]`: the frame temperature at which the
+  winding would be exactly at its permitted 140 °C, so the second channel cannot
+  be quietly tuned to whatever makes a test pass.
 - **No control loop dynamics.** The speed response of the real system depends on
   the SINAMICS drive's loop tuning, not the motor alone. The model fits only the
   torque limited acceleration implied by rated torque and rotor inertia.

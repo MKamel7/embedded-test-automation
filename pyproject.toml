@@ -1,6 +1,6 @@
 [project]
 name = "embedded-test-automation"
-version = "1.4.0"
+version = "1.5.0"
 description = "HIL-style automated test framework for an embedded motor controller (simulated DUT, transport-abstracted driver, pytest + CI)"
 requires-python = ">=3.10"
 dependencies = []
