@@ -94,11 +94,18 @@ expressed as a strategy.
 
 ## Test design
 
-Techniques are chosen deliberately: equivalence partitioning and boundary value
+Techniques are chosen deliberately, and they are the named ones rather than
+whatever the code suggested: equivalence partitioning and boundary value
 analysis on the command ranges, state transition testing across
 IDLE/RUNNING/FAULT with the FAULT latch rule, fault injection through a test
 backdoor, property based testing with a stateful model, and fault seeding to
-verify the suite itself. Scope, entry and exit criteria, risk based
+verify the suite itself.
+
+Those are the techniques ISTQB catalogues and that IEC 61508-3 expects to see
+named in a software verification plan. This project claims neither
+certification nor compliance with either: it claims that the test design was
+made on purpose and can be argued with, which is the part a reviewer can
+actually check. Scope, entry and exit criteria, risk based
 prioritisation and the honest limits are in
 [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md).
 
