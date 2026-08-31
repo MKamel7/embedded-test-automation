@@ -15,7 +15,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ## Why this design
 
 - **Transport abstraction is the HIL upgrade path.** Tests talk to a `Transport` interface. Today it binds to an in-process simulator; replacing it with a pyserial implementation runs the *same suite* against real hardware, which is the whole point of hardware-in-the-loop test engineering.
-- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time: the full suite runs in ~0.1 s, never flakes in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible.
+- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the 95 deterministic tests run in **under a second**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The full suite takes about **45 seconds**, and essentially all of that is the property-based search in `test_protocol_fuzz.py` and `test_fuzz_efficacy.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
 - **Faults are latched, like real motor drivers.** Overheat and stall trip a `FAULT` state that stops the motor, rejects speed commands, and survives cooldown until an explicit `RESET`, and the suite verifies exactly that contract.
 
 ## Test categories
