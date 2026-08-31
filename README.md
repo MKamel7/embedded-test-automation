@@ -8,7 +8,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ┌────────────────┐     ASCII protocol      ┌──────────────────────┐
 │  pytest suite  │──▶ driver ──▶ Transport │  Device under test   │
 │  5/5 mutants   │            (swappable)  │  (simulated today,   │
-│  119 tests     │◀── responses ◀──────────│   real UART later)   │
+│  122 tests     │◀── responses ◀──────────│   real UART later)   │
 └────────────────┘                         └──────────────────────┘
 ```
 
@@ -134,7 +134,7 @@ prioritisation and the honest limits are in
 
 CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
 
-- 119 tests pass
+- 122 tests pass
 - **5 of 5 seeded defects killed** (`test_fuzz_efficacy.py`), and every mutant in
   the registry has a search, so the score cannot be rounded up by forgetting one
 - **100% statement and branch coverage** of the DUT and testbench
