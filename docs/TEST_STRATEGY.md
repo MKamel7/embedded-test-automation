@@ -24,6 +24,7 @@ real silicon.
 |---|---|---|
 | Unit / component | `test_protocol.py` | Each command is parsed and answered per the grammar |
 | Integration | `test_serial_transport.py` | Driver and transport agree on framing and timeouts |
+| Integration (serial) | `test_serial_hil.py` | Driver, transport, kernel tty and DUT agree across a real character device |
 | System / behavioural | `test_control_behavior.py`, `test_fault_injection.py`, `test_watchdog.py` | The controller behaves correctly as a closed loop under normal and fault conditions |
 | Suite verification | `test_fuzz_efficacy.py` | The tests themselves can detect defects |
 
@@ -135,8 +136,12 @@ Stated because they bound what the results mean:
   runs give identical numbers and the CSV trend has zero variance by
   construction. On real hardware the same logging would show a distribution,
   and reporting a mean with a spread would then be the honest form.
-- **The serial path is tested against a loopback**, not a physical device. It
-  verifies framing, encoding and timeout handling, not electrical behaviour.
+- **The serial path is tested against a PTY pair**, not a physical device.
+  `test_serial_hil.py` runs the driver, the transport, the kernel tty layer and
+  a real DUT across a `socat` character device, so the far end answers the
+  protocol rather than echoing it. A PTY still has no baud rate, no parity, no
+  framing errors and no noise, so this proves the software path only.
+  Electrical behaviour needs a board.
 - **Coverage is not correctness.** 100% branch coverage means every branch ran,
   not that every behaviour is right. The property tests and seeded defects
   exist because coverage alone is a weak signal.

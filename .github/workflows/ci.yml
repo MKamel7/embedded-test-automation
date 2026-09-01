@@ -29,6 +29,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
+      # socat provides the PTY pair the serial HIL tests run over. Installed
+      # explicitly rather than relied on: those tests skip when it is absent,
+      # so without this step the suite would go green having quietly stopped
+      # exercising the pyserial path. `test_ci_installs_socat` asserts this
+      # step exists, because the skip is only acceptable while something
+      # guarantees the tests really run here.
+      - name: Install socat (virtual serial port for the HIL tests)
+        run: sudo apt-get update && sudo apt-get install -y socat
       # The coverage gate is set here rather than in pyproject so that running
       # a subset of the suite locally does not fail on partial coverage. 100%
       # is the real figure for the DUT and testbench, so anything less is a

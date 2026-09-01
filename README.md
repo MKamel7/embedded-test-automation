@@ -8,14 +8,14 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ┌────────────────┐     ASCII protocol      ┌──────────────────────┐
 │  pytest suite  │──▶ driver ──▶ Transport │  Device under test   │
 │  5/5 mutants   │            (swappable)  │  (simulated today,   │
-│  122 tests     │◀── responses ◀──────────│   real UART later)   │
+│  129 tests     │◀── responses ◀──────────│   real UART later)   │
 └────────────────┘                         └──────────────────────┘
 ```
 
 ## Why this design
 
 - **Transport abstraction is the HIL upgrade path.** Tests talk to a `Transport` interface. Today it binds to an in-process simulator; replacing it with a pyserial implementation runs the *same suite* against real hardware, which is the whole point of hardware-in-the-loop test engineering.
-- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the 95 deterministic tests run in **under a second**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The full suite takes about **45 seconds**, and essentially all of that is the property-based search in `test_protocol_fuzz.py` and `test_fuzz_efficacy.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
+- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the 105 deterministic tests run in **under three seconds**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The full suite takes about **45 seconds**, and essentially all of that is the property-based search in `test_protocol_fuzz.py` and `test_fuzz_efficacy.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
 - **Faults are latched, like real motor drivers.** Overheat and stall trip a `FAULT` state that stops the motor, rejects speed commands, and survives cooldown until an explicit `RESET`, and the suite verifies exactly that contract.
 
 ## Test categories
@@ -29,6 +29,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 | `tests/test_protocol_fuzz.py` | Property-based fuzzing (hypothesis): never-crash contract, state-machine invariants, FAULT-latch invariant, SET_SPEED and watchdog contracts |
 | `tests/test_reset_contract.py` | What RESET clears and what it must not: the controller is cleared, the machine is not |
 | `tests/test_fuzz_efficacy.py` | Fault seeding: five deliberately broken controllers that the property suite must reject |
+| `tests/test_serial_hil.py` | The pyserial path over a real PTY pair from `socat`: the DUT answers the protocol across a kernel tty, not an echo |
 
 ## The device under test
 
@@ -134,7 +135,7 @@ prioritisation and the honest limits are in
 
 CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
 
-- 122 tests pass
+- 129 tests pass
 - **5 of 5 seeded defects killed** (`test_fuzz_efficacy.py`), and every mutant in
   the registry has a search, so the score cannot be rounded up by forgetting one
 - **100% statement and branch coverage** of the DUT and testbench
@@ -159,7 +160,6 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 
 ## Roadmap
 
-- [ ] **A virtual COM port**, exercising the real `SerialTransport` path with no board. Free, and the first step off simulation
 - [ ] **A real board** (STM32 or ESP32 class) over UART, with corruption, disconnect and reconnect, power cycling, timing jitter, hardware watchdog and GPIO fault injection. A logic-analyser trace on a failing test would be the best evidence here
 - [ ] **Grow the mutant set with `mutmut` or `cosmic-ray`**, after the state-machine suite, so survivors are triaged once rather than twice
 - [ ] Hypothesis `target()`-guided fault-state coverage
