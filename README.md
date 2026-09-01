@@ -7,15 +7,15 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ```
 ┌────────────────┐     ASCII protocol      ┌──────────────────────┐
 │  pytest suite  │──▶ driver ──▶ Transport │  Device under test   │
-│  80 tests      │            (swappable)  │  (simulated today,   │
-│  100% coverage │◀── responses ◀──────────│   real UART later)   │
+│  5/5 mutants   │            (swappable)  │  (simulated today,   │
+│  122 tests     │◀── responses ◀──────────│   real UART later)   │
 └────────────────┘                         └──────────────────────┘
 ```
 
 ## Why this design
 
 - **Transport abstraction is the HIL upgrade path.** Tests talk to a `Transport` interface. Today it binds to an in-process simulator; replacing it with a pyserial implementation runs the *same suite* against real hardware, which is the whole point of hardware-in-the-loop test engineering.
-- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time: the full suite runs in ~0.1 s, never flakes in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible.
+- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the 95 deterministic tests run in **under a second**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The full suite takes about **45 seconds**, and essentially all of that is the property-based search in `test_protocol_fuzz.py` and `test_fuzz_efficacy.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
 - **Faults are latched, like real motor drivers.** Overheat and stall trip a `FAULT` state that stops the motor, rejects speed commands, and survives cooldown until an explicit `RESET`, and the suite verifies exactly that contract.
 
 ## Test categories
@@ -27,7 +27,8 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 | `tests/test_fault_injection.py` | Overheat trip, stall-to-overheat cascade, fault latching, command rejection in FAULT, telemetry availability during faults, RESET recovery |
 | `tests/test_watchdog.py` | Software watchdog: enable/kick/disable, exact-budget trip, latched fault, RESET recovery, range validation |
 | `tests/test_protocol_fuzz.py` | Property-based fuzzing (hypothesis): never-crash contract, state-machine invariants, FAULT-latch invariant, SET_SPEED and watchdog contracts |
-| `tests/test_fuzz_efficacy.py` | Fault seeding: three deliberately broken controllers that the property suite must reject |
+| `tests/test_reset_contract.py` | What RESET clears and what it must not: the controller is cleared, the machine is not |
+| `tests/test_fuzz_efficacy.py` | Fault seeding: five deliberately broken controllers that the property suite must reject |
 
 ## The device under test
 
@@ -72,18 +73,38 @@ Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.p
 
 Property-based fuzzing (`test_protocol_fuzz.py`) runs 200 examples per property against fresh device instances and found **no invariant violations**: the protocol never raises on arbitrary input, and `FAULT` provably never clears except immediately after `RESET`.
 
-## Proving the tests can actually fail
+## Mutation score: 5 killed of 5 non-equivalent mutants
 
-"No defects found" only means something if the suite could have found one. So
-three known bugs are seeded into copies of the controller, and
+**This is the number to read, not the coverage figure.** Coverage says every
+line ran. It cannot say an assertion would have noticed if the line were
+wrong, and a suite at 100% coverage with no assertions scores exactly the same
+as this one. Fault seeding asks the question coverage cannot: if the
+controller were broken in a specific, realistic way, would this suite go red?
+
+Five known bugs are seeded into copies of the controller.
 `test_fuzz_efficacy.py` asserts the same properties reject each of them while
-still passing on the clean implementation:
+still passing on the clean implementation, and a further test asserts that
+every mutant in the registry has a search, so the score above cannot be
+rounded up by adding a mutant and forgetting to hunt it.
+
+All five are non-equivalent by construction: each changes observable behaviour
+at a stated input, and the minimal input is recorded below rather than
+asserted to exist.
 
 | Seeded defect | Minimal input that exposes it |
 |---|---|
 | A latched `FAULT` cleared by an unknown command instead of only by `RESET` | any unrecognised line |
 | `SET_SPEED` boundary written `<= MAX + 1` | `SET_SPEED 6001` |
 | Watchdog countdown compared `< 0` instead of `<= 0`, firing one step late | a 1 step budget |
+| `reset()` zeroes the thermal model, so a hot motor reads cold | 1 step at full speed |
+| `reset()` restores the state machine but leaves the watchdog armed, so the device reboots into a fault loop | a 1 step budget |
+
+**The fourth one is not hypothetical: it shipped here.** An earlier version of
+`reset()` cleared the thermal model while its docstring and a release note both
+said it did not, and the suite missed it, because the tests asserted the RESET
+*command* is refused while the motor is hot. That is a different property, and
+`reset()` is reachable through the driver without passing that gate at all.
+`tests/test_reset_contract.py` now tests the postcondition on both paths.
 
 This found a real weakness in the suite. The seeded range defect initially
 **survived**: `SET_SPEED` was fuzzed with unbounded floats, and only values in
@@ -113,7 +134,9 @@ prioritisation and the honest limits are in
 
 CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
 
-- 80 tests pass
+- 122 tests pass
+- **5 of 5 seeded defects killed** (`test_fuzz_efficacy.py`), and every mutant in
+  the registry has a search, so the score cannot be rounded up by forgetting one
 - **100% statement and branch coverage** of the DUT and testbench
   (`--cov-fail-under=100`)
 - `ruff check` clean
@@ -142,8 +165,14 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 - [x] Watchdog / communication-timeout test scenarios
 - [x] Fault seeding to verify the property suite detects real defects
 - [x] Coverage, lint and type-check gates in CI
-- [ ] Hardware profile for a real motor driver board
+- [x] `reset()` contract tested on both paths, and two seeded defects aimed at it
+- [x] **Model-based state-machine testing**: a reference model of the protocol runs beside the device and must agree after every command, so a command accepted in a state that should refuse it is a failure rather than something the invariants happen to miss
+- [ ] **A virtual COM port**, exercising the real `SerialTransport` path with no board. Free, and the first step off simulation
+- [ ] **A real board** (STM32 or ESP32 class) over UART, with corruption, disconnect and reconnect, power cycling, timing jitter, hardware watchdog and GPIO fault injection. A logic-analyser trace on a failing test would be the best evidence here
+- [ ] **Grow the mutant set with `mutmut` or `cosmic-ray`**, after the state-machine suite, so survivors are triaged once rather than twice
 - [ ] Hypothesis `target()`-guided fault-state coverage
+
+Not doing: making the DUT more realistic. The determinism is the feature; adding wall-clock behaviour would trade exact reproducibility for realism this does not need.
 
 ## License
 

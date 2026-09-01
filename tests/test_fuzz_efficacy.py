@@ -26,7 +26,10 @@ from hypothesis.errors import NoSuchExample
 
 from dut_sim.motor_controller import MAX_RPM, MotorControllerSim
 from dut_sim.seeded_defects import (
+    MUTANTS,
     FaultLatchLeak,
+    ResetClearsThermalState,
+    ResetLeavesWatchdogArmed,
     SpeedRangeOffByOne,
     WatchdogOffByOne,
 )
@@ -139,18 +142,94 @@ def test_watchdog_property_passes_on_clean_implementation():
     assert _search(budgets, _watchdog_trips_late(MotorControllerSim)) is None
 
 
+# ---- defect 4: a reset that discards physical state -------------------------
+# The only defect here that actually shipped. reset() once cleared the thermal
+# model under a docstring saying it did not, and the suite missed it because
+# the tests gated on the RESET *command* rather than on what reset does.
+def _reset_discards_heat(cls) -> "callable":
+    def violates(steps: int) -> bool:
+        sim = cls()
+        sim.handle_command(f"SET_SPEED {MAX_RPM}")
+        sim.step(steps)
+        before = sim.temperature_c
+        sim.reset()
+        return sim.temperature_c != before
+    return violates
+
+
+def test_reset_clearing_thermal_state_is_detected():
+    steps = st.integers(min_value=1, max_value=300)
+    counterexample = _search(steps, _reset_discards_heat(ResetClearsThermalState))
+    assert counterexample is not None, (
+        "the reset contract failed to detect a controller that cools the motor "
+        "by clearing a register"
+    )
+    # One step of running at full speed is already enough heat to lose.
+    assert counterexample == 1, (
+        f"expected the minimal violation after 1 step, got {counterexample}"
+    )
+
+
+def test_reset_contract_passes_on_clean_implementation():
+    steps = st.integers(min_value=1, max_value=300)
+    assert _search(steps, _reset_discards_heat(MotorControllerSim)) is None
+
+
+# ---- defect 5: a reset that forgets the peripheral --------------------------
+def _reset_leaves_watchdog_armed(cls) -> "callable":
+    def violates(budget: int) -> bool:
+        sim = cls()
+        sim.handle_command(f"WDG_EN {budget}")
+        sim.reset()
+        sim.step(budget + 1)
+        return sim.state == "FAULT"
+    return violates
+
+
+def test_reset_leaving_the_watchdog_armed_is_detected():
+    budgets = st.integers(min_value=1, max_value=1000)
+    counterexample = _search(budgets, _reset_leaves_watchdog_armed(ResetLeavesWatchdogArmed))
+    assert counterexample is not None, (
+        "the reset contract failed to detect a controller that reboots into a "
+        "watchdog fault loop"
+    )
+    assert counterexample == 1, (
+        f"expected the minimal violation at a 1 step budget, got {counterexample}"
+    )
+
+
+def test_watchdog_is_really_disarmed_on_the_clean_implementation():
+    budgets = st.integers(min_value=1, max_value=1000)
+    assert _search(budgets, _reset_leaves_watchdog_armed(MotorControllerSim)) is None
+
+
 # ---- every seeded defect must be caught by something ------------------------
-@pytest.mark.parametrize(
-    "name,cls,strategy,predicate_factory",
-    [
-        ("fault_latch_leak", FaultLatchLeak, st.text(max_size=40),
-         _clears_fault_without_reset),
-        ("speed_range_off_by_one", SpeedRangeOffByOne,
-         RPM_STRATEGY, _accepts_out_of_range),
-        ("watchdog_off_by_one", WatchdogOffByOne,
-         st.integers(min_value=1, max_value=1000), _watchdog_trips_late),
-    ],
-)
+EFFICACY_CASES = [
+    ("fault_latch_leak", FaultLatchLeak, st.text(max_size=40),
+     _clears_fault_without_reset),
+    ("speed_range_off_by_one", SpeedRangeOffByOne,
+     RPM_STRATEGY, _accepts_out_of_range),
+    ("watchdog_off_by_one", WatchdogOffByOne,
+     st.integers(min_value=1, max_value=1000), _watchdog_trips_late),
+    ("reset_clears_thermal_state", ResetClearsThermalState,
+     st.integers(min_value=1, max_value=300), _reset_discards_heat),
+    ("reset_leaves_watchdog_armed", ResetLeavesWatchdogArmed,
+     st.integers(min_value=1, max_value=1000), _reset_leaves_watchdog_armed),
+]
+
+
+def test_every_registered_mutant_has_a_search():
+    """A mutant nobody searches for is a mutation score quietly rounded up.
+
+    The README quotes a killed-over-total figure. If someone adds a mutant to
+    dut_sim.seeded_defects.MUTANTS and forgets the search, that figure silently
+    stops meaning what it says, so the registry and the case list are compared
+    rather than maintained in parallel and hoped over.
+    """
+    assert {name for name, *_ in EFFICACY_CASES} == set(MUTANTS)
+
+
+@pytest.mark.parametrize("name,cls,strategy,predicate_factory", EFFICACY_CASES)
 def test_no_seeded_defect_survives(name, cls, strategy, predicate_factory):
     """Mutation score: no mutant may survive the property suite."""
     assert _search(strategy, predicate_factory(cls)) is not None, (
@@ -160,12 +239,8 @@ def test_no_seeded_defect_survives(name, cls, strategy, predicate_factory):
 
 def test_clean_controller_survives_none_of_the_searches():
     """Sanity check the searches are not simply always-true."""
-    checks = [
-        (st.text(max_size=40), _clears_fault_without_reset(MotorControllerSim)),
-        (RPM_STRATEGY, _accepts_out_of_range(MotorControllerSim)),
-        (st.integers(min_value=1, max_value=1000),
-         _watchdog_trips_late(MotorControllerSim)),
-    ]
+    checks = [(strategy, factory(MotorControllerSim))
+              for _, _, strategy, factory in EFFICACY_CASES]
     for strategy, predicate in checks:
         assert _search(strategy, predicate) is None
     assert math.isfinite(MotorControllerSim().temperature_c)

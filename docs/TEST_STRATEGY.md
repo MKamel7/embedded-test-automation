@@ -68,7 +68,7 @@ Exit, enforced in CI on Python 3.10 and 3.12:
 ## 5. Verifying the tests themselves
 
 A property suite that never fails proves only that it ran. To show the
-properties can actually detect defects, `dut_sim.seeded_defects` contains three
+properties can actually detect defects, `dut_sim.seeded_defects` contains five
 deliberately broken controllers, each a realistic embedded bug:
 
 | Seeded defect | Nature | Minimal input that exposes it |
@@ -76,6 +76,8 @@ deliberately broken controllers, each a realistic embedded bug:
 | `FaultLatchLeak` | A latched fault is cleared by an unknown command instead of only by `RESET` | any unrecognised line |
 | `SpeedRangeOffByOne` | Boundary written as `<= MAX + 1` | `SET_SPEED 6001` |
 | `WatchdogOffByOne` | Countdown compared `< 0` instead of `<= 0`, so the timer fires one step late | a 1 step budget |
+| `ResetClearsThermalState` | `reset()` zeroes the thermal model, so a hot motor reads cold | 1 step at full speed |
+| `ResetLeavesWatchdogArmed` | `reset()` restores the state machine and forgets the peripheral, so the device reboots into a fault loop | a 1 step budget |
 
 `test_fuzz_efficacy.py` asserts each defect is found, and that the same search
 finds nothing against the clean implementation. That second half matters: it

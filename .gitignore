@@ -1,10 +1,11 @@
 __pycache__/
 *.py[cod]
 .venv/
-uv.lock
 report*.html
 junit*.xml
 .pytest_cache/
+.coverage
+coverage.xml
 measurements/*
 !measurements/sample-run.csv
 !measurements/characterization.csv
