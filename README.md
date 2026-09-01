@@ -159,14 +159,6 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 
 ## Roadmap
 
-- [x] pyserial `Transport` (`SerialTransport`) + `loop://` framing tests, the HIL upgrade path
-- [x] Property-based protocol fuzzing (hypothesis)
-- [x] Measurement logging + trend/characterization plots
-- [x] Watchdog / communication-timeout test scenarios
-- [x] Fault seeding to verify the property suite detects real defects
-- [x] Coverage, lint and type-check gates in CI
-- [x] `reset()` contract tested on both paths, and two seeded defects aimed at it
-- [x] **Model-based state-machine testing**: a reference model of the protocol runs beside the device and must agree after every command, so a command accepted in a state that should refuse it is a failure rather than something the invariants happen to miss
 - [ ] **A virtual COM port**, exercising the real `SerialTransport` path with no board. Free, and the first step off simulation
 - [ ] **A real board** (STM32 or ESP32 class) over UART, with corruption, disconnect and reconnect, power cycling, timing jitter, hardware watchdog and GPIO fault injection. A logic-analyser trace on a failing test would be the best evidence here
 - [ ] **Grow the mutant set with `mutmut` or `cosmic-ray`**, after the state-machine suite, so survivors are triaged once rather than twice
