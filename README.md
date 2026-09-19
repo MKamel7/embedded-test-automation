@@ -1,6 +1,9 @@
 # Embedded Test Automation Framework
 
-![tests](https://github.com/MKamel7/embedded-test-automation/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/MKamel7/embedded-test-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/MKamel7/embedded-test-automation/actions)
+[![Tests](https://img.shields.io/badge/tests-129%20passing-brightgreen)](tests)
+[![Mutation score](https://img.shields.io/badge/mutants%20killed-5%2F5-brightgreen)](tests)
+[![Python](https://img.shields.io/badge/Python-3.12-blue)](https://www.python.org)
 
 HIL-style automated testing for an embedded motor controller: a deterministic simulated device under test (DUT), a transport-abstracted device driver, and a pytest suite covering **protocol conformance**, **closed-loop behavior**, and **fault injection**, with HTML/JUnit reports generated on every push by GitHub Actions.
 
@@ -12,13 +15,13 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 └────────────────┘                         └──────────────────────┘
 ```
 
-## Why this design
+## 🎯 Why this design
 
 - **Transport abstraction is the HIL upgrade path.** Tests talk to a `Transport` interface. Today it binds to an in-process simulator; replacing it with a pyserial implementation runs the *same suite* against real hardware, which is the whole point of hardware-in-the-loop test engineering.
 - **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the 105 deterministic tests run in **under three seconds**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The full suite takes about **45 seconds**, and essentially all of that is the property-based search in `test_protocol_fuzz.py` and `test_fuzz_efficacy.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
 - **Faults are latched, like real motor drivers.** Overheat and stall trip a `FAULT` state that stops the motor, rejects speed commands, and survives cooldown until an explicit `RESET`, and the suite verifies exactly that contract.
 
-## Test categories
+## 🧪 Test categories
 
 | File | Covers |
 |---|---|
@@ -31,7 +34,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 | `tests/test_fuzz_efficacy.py` | Fault seeding: five deliberately broken controllers that the property suite must reject |
 | `tests/test_serial_hil.py` | The pyserial path over a real PTY pair from `socat`: the DUT answers the protocol across a kernel tty, not an echo |
 
-## The device under test
+## 🖥️ The device under test
 
 The DUT is a simulation, but its envelope and protection thresholds are taken
 from a real device rather than invented: a **Siemens SIMOTICS S-1FK2**
@@ -60,7 +63,7 @@ both on one step size would need millions of steps to reach a thermal trip. The
 thermal time scale is deliberately compressed so a thermal fault is reachable in
 a short test, so thermal latencies are in steps only and never in seconds.
 
-## Characterization
+## 📈 Characterization
 
 Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.py` sweeps parameters over fresh device instances and `scripts/plot_characterization.py` renders the curves:
 
@@ -74,7 +77,7 @@ Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.p
 
 Property-based fuzzing (`test_protocol_fuzz.py`) runs 200 examples per property against fresh device instances and found **no invariant violations**: the protocol never raises on arbitrary input, and `FAULT` provably never clears except immediately after `RESET`.
 
-## Mutation score: 5 killed of 5 non-equivalent mutants
+## 🧬 Mutation score: 5 killed of 5 non-equivalent mutants
 
 **This is the number to read, not the coverage figure.** Coverage says every
 line ran. It cannot say an assertion would have noticed if the line were
@@ -114,7 +117,7 @@ never generated one. Both the property and the efficacy search now sample the
 neighbourhood of each documented limit, which is boundary value analysis
 expressed as a strategy.
 
-## Test design
+## 📐 Test design
 
 Techniques are chosen deliberately, and they are the named ones rather than
 whatever the code suggested: equivalence partitioning and boundary value
@@ -131,7 +134,7 @@ actually check. Scope, entry and exit criteria, risk based
 prioritisation and the honest limits are in
 [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md).
 
-## Quality gates
+## ✅ Quality gates
 
 CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
 
@@ -143,11 +146,11 @@ CI enforces all of these on Python 3.10 and 3.12, and the build fails on any:
 - `ruff check` clean
 - `mypy --strict` clean
 
-## Measurement logging
+## 📝 Measurement logging
 
 Behavior and fault tests record real metrics (settling steps, peak temperature, trip latencies) to timestamped CSVs via a session fixture; `scripts/plot_trends.py` charts a metric across runs for regression tracking. See `measurements/sample-run.csv`.
 
-## Run it
+## ▶️ Run it
 
 ```bash
 uv run --group dev pytest                  # full suite, with coverage
@@ -158,7 +161,29 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 
 (or classic: `pip install pytest && pytest`)
 
-## Roadmap
+## 💡 What I learned
+
+- **Test the thing you ship, not the thing you simulated.** The transport abstraction
+  exists so the same suite runs against the simulator and against real hardware without
+  a line changing. Without it I would have had a beautifully tested simulator and no
+  evidence about the device.
+
+- **A deterministic device under test is worth the effort it costs.** Every flaky test
+  I have ever chased came from something non-deterministic underneath. Making the
+  simulated controller reproducible removed a whole category of debugging that
+  otherwise eats your evenings.
+
+- **Coverage says a line ran, not that a test would notice it breaking.** Mutation
+  testing is what closes that gap. Deliberately breaking the controller in five ways
+  and confirming the suite caught all five tells me something 100 percent coverage
+  never could.
+
+- **Protocol conformance and closed-loop behaviour are different questions.** One asks
+  whether the device speaks correctly, the other whether it acts correctly. Keeping
+  them as separate categories stopped me writing tests that quietly checked both and
+  proved neither.
+
+## 🔭 Future improvements
 
 - [ ] **A real board** (STM32 or ESP32 class) over UART, with corruption, disconnect and reconnect, power cycling, timing jitter, hardware watchdog and GPIO fault injection. A logic-analyser trace on a failing test would be the best evidence here
 - [ ] **Grow the mutant set with `mutmut` or `cosmic-ray`**, after the state-machine suite, so survivors are triaged once rather than twice
@@ -166,6 +191,6 @@ uv run --group dev pytest --html=report.html --self-contained-html   # + report
 
 Not doing: making the DUT more realistic. The determinism is the feature; adding wall-clock behaviour would trade exact reproducibility for realism this does not need.
 
-## License
+## 📄 License
 
 MIT · © 2026 Mo Kamel
