@@ -15,6 +15,16 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 └────────────────┘                         └──────────────────────┘
 ```
 
+## 🛠️ Built with
+
+| | |
+| --- | --- |
+| **Language** | Python |
+| **Testing** | pytest, Hypothesis property tests, mutation testing |
+| **Architecture** | Transport-abstracted device driver, deterministic simulated DUT |
+| **Reporting** | HTML and JUnit reports on every push |
+| **Engineering** | GitHub Actions CI, quality gates |
+
 ## 🎯 Why this design
 
 - **Transport abstraction is the HIL upgrade path.** Tests talk to a `Transport` interface. Today it binds to an in-process simulator; replacing it with a pyserial implementation runs the *same suite* against real hardware, which is the whole point of hardware-in-the-loop test engineering.
@@ -194,3 +204,9 @@ Not doing: making the DUT more realistic. The determinism is the feature; adding
 ## 📄 License
 
 MIT · © 2026 Mo Kamel
+
+---
+
+Built by **Mo Kamel**, M.Eng. Mechatronic and Cyber-Physical Systems, Technische
+Hochschule Deggendorf.
+[Portfolio](https://mkamel7.github.io) · [LinkedIn](https://linkedin.com/in/mo-kamel7)
