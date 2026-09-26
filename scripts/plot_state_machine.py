@@ -45,10 +45,11 @@ BOX_W, BOX_H = 2.5, 1.15
 TRANSITIONS = [
     ("IDLE", "RUNNING", "SET_SPEED > 0", -0.30, 0.0, 1.02),
     ("RUNNING", "IDLE", "SET_SPEED 0  |  STOP", -0.30, 0.0, -1.02),
-    ("RUNNING", "FAULT", "overheat (T >= 90 C)\nstall heating\nwatchdog timeout",
+    ("RUNNING", "FAULT",
+     "winding >= 149.1 C\noverload (I2t)\nsensor disagreement\nwatchdog timeout",
      -0.10, 1.70, 0.30),
-    ("IDLE", "FAULT", "watchdog timeout\n(if enabled)", 0.10, -1.45, 0.55),
-    ("FAULT", "IDLE", "RESET\n(only way out)", 0.30, 0.75, -0.30),
+    ("IDLE", "FAULT", "watchdog timeout\nor overload while\nholding at 0 rpm", 0.10, -1.45, 0.55),
+    ("FAULT", "IDLE", "RESET\n(only way out,\nrefused while hot)", 0.30, 0.75, -0.30),
 ]
 
 
@@ -89,7 +90,9 @@ def draw() -> Path:
                       "edgecolor": "none"})
 
     # FAULT latches: every other command is rejected while it is set.
-    ax.annotate("all other commands -> ERR STATE\nstep() holds speed at 0",
+    ax.annotate("SET_SPEED and WDG_KICK -> ERR STATE\n"
+                "GET_* telemetry still answers\n"
+                "step() holds speed at 0",
                 xy=(4.15, 0.10), ha="center", va="top", fontsize=8,
                 color=COLOR_FAULT, linespacing=1.4)
 
