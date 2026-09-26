@@ -111,8 +111,8 @@ Stated because they bound what the results mean:
 - **The DUT is a simulation, partially grounded in a real device.** The
   operating envelope and protection thresholds come from the Siemens SIMOTICS
   S-1FK2 data sheet (article `1FK2105-6AF10-0SA0`): 6,000 rpm maximum speed,
-  and a 140 °C overheat trip from thermal class 155 (F) with dT = 100 K at 40 °C
-  ambient. The speed dynamics are fitted to the data sheet's rated torque and
+  and, from the series documentation, thermal class 155 (F) with dT = 100 K at
+  40 °C ambient, so rated duty settles at 140 °C and the trip sits at 149.1 °C. The speed dynamics are fitted to the data sheet's rated torque and
   rotor inertia. Nothing here validates a real driver stage, and this is not a
   validated model of that motor.
 

@@ -55,10 +55,14 @@ def measure_settling_steps(target_rpm: float) -> int:
 
 
 def measure_peak_temperature(target_rpm: float) -> float:
-    """Peak winding temperature over a sustained run at target_rpm."""
+    """Peak winding temperature over a sustained run at target_rpm.
+
+    Commanded through the protocol so the drive is energised. Setting
+    target_rpm and state directly left drive_enabled False, which draws no
+    current and therefore measured ambient at every speed.
+    """
     sim = MotorControllerSim()
-    sim.target_rpm = target_rpm
-    sim.state = "RUNNING"
+    assert sim.handle_command(f"SET_SPEED {target_rpm}") == "OK"
     peak = sim.temperature_c
     for _ in range(THERMAL_SOAK_STEPS):
         sim.step()

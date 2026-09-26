@@ -28,7 +28,7 @@ HIL-style automated testing for an embedded motor controller: a deterministic si
 ## 🎯 Why this design
 
 - **Transport abstraction is the HIL upgrade path.** Tests talk to a `Transport` interface. Today it binds to an in-process simulator; replacing it with a pyserial implementation runs the *same suite* against real hardware, which is the whole point of hardware-in-the-loop test engineering.
-- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the 105 deterministic tests run in **under three seconds**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The full suite takes about **45 seconds**, and essentially all of that is the property-based search in `test_protocol_fuzz.py` and `test_fuzz_efficacy.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
+- **Deterministic, step-based physics.** The DUT simulation advances in discrete steps, not wall-clock time, so nothing here waits on a clock: the device tests themselves run in **about two seconds**, never flake in CI, and thermal scenarios (overheat trips, stall heating) are exactly reproducible. The 105 deterministic tests take about **seven seconds** in all, because the two test-count gates in `test_documented_counts.py` spend about four of them re-collecting the suite. The full suite takes about **45 seconds**, and essentially all of the difference is the property-based search in `test_protocol_fuzz.py`, `test_fuzz_efficacy.py` and `test_protocol_model.py` deliberately spending time looking for counterexamples. That is a budget, not slow physics.
 - **Faults are latched, like real motor drivers.** Overheat and stall trip a `FAULT` state that stops the motor, rejects speed commands, and survives cooldown until an explicit `RESET`, and the suite verifies exactly that contract.
 
 ## 🧪 Test categories
@@ -58,7 +58,7 @@ in [`docs/REFERENCES.md`](docs/REFERENCES.md).
 | Rated speed / torque | 3,000 rpm / 6.60 Nm | speed dynamics fit |
 | Rotor inertia | 3.5 kgcm² | speed dynamics fit |
 | Rated / maximum current | 5.6 A / 24.0 A | stall heating scale |
-| Thermal class | 155 (F), dT = 100 K at 40 °C ambient | 140 °C overheat trip |
+| Thermal class (series documentation, not the article sheet) | 155 (F), dT = 100 K at 40 °C ambient | rated duty settles at 140 °C; trip at 149.1 °C, the 155 °C insulation limit less one worst-case step |
 
 The speed dynamics are **fitted**: at rated torque the torque-limited
 acceleration is 6.60 / 3.5e-4 = 18,857 rad/s², so the rotor reaches rated speed
@@ -81,7 +81,7 @@ Beyond pass/fail, the harness *measures* the controller. `scripts/characterize.p
 
 | Sweep | Result |
 |---|---|
-| Peak winding temperature vs. target speed | Smooth rise 42.0 to 64.1 °C across 500 to 6000 rpm, well under the 140 °C protection limit |
+| Peak winding temperature vs. target speed | Flat at 70.9 °C across 500 to 6000 rpm after a 150-step soak at rated load. Heat follows current, which follows load, so speed alone does not heat the winding (validation finding V-03) |
 | Settling time vs. target speed | Monotonic 10 to 20 steps (1 step = 1 ms), higher setpoints take longer to reach the ±50 rpm band |
 | Watchdog trip latency vs. budget | Exact diagonal (latency = budget) across 2 to 200 steps, verifying watchdog timing precision |
 
@@ -207,6 +207,6 @@ MIT · © 2026 Mo Kamel
 
 ---
 
-Built by **Mo Kamel**, M.Eng. Mechatronic and Cyber-Physical Systems, Technische
+Built by **Mo Kamel**, M.Eng. student in Mechatronic and Cyber-Physical Systems, Technische
 Hochschule Deggendorf.
 [Portfolio](https://mkamel7.github.io) · [LinkedIn](https://linkedin.com/in/mo-kamel7)
